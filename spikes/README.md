@@ -38,65 +38,29 @@ Every metric in every spike must carry a three-tier threshold:
 | **WARNING** | Acceptable but needs attention before production |
 | **FAIL** | Below minimum — architecture must change |
 
-## Dependency Graph
+## Version Roadmap
 
 ```
-EP-001  (Discovery, Pairing, Transport, Encryption)
-  │
-  ├───────────────┐
-  │               │
-  ▼               ▼
-EP-002         EP-003
-Android        Windows
-  │               │
-  └───────┐   ┌───┘
-          ▼   ▼
-        EP-005
-    Network Resilience
+v0.1 — Core Communication
+├── EP-001  Discovery & Transport   ✅ Done
+├── EP-002  Pairing & Trust         🔜
+└── EP-003  Command Execution
+        ↓
+  Release v0.1
 
-EP-004  (Configuration Ownership — depends on EP-001 + EP-003)
-EP-006  (Action Execution — depends on EP-003)
-EP-007  (Protocol Evolution — depends on EP-001)
+v0.2 — Mobile Command Deck (pages, buttons, icons, profiles, app launch)
+v0.3 — Context Awareness (work, gaming, coding, battery profiles)
+v0.4 — Automation (triggers, macros, pipelines)
+v0.5 — Plugin Ecosystem
+v0.6 — Polish
+v0.7 — Public Beta
+v1.0 — Production Stable
 ```
-
-## Evidence Template
-
-Every spike must produce and document these artifacts before deletion:
-
-### Measurements
-| Metric | Measured Value | Conditions | Threshold |
-|--------|----------------|------------|-----------|
-| Discovery time | | | PASS <5s / WARN 5-10s / FAIL >10s |
-| Handshake time | | | PASS <2s / WARN 2-5s / FAIL >5s |
-| Round-trip latency | | | PASS <500ms / WARN 500-1000ms / FAIL >1000ms |
-| Reconnection time | | | PASS <10s / WARN 10-30s / FAIL >30s |
-
-### Compatibility Matrix
-| OS / Network Type | Result | Notes |
-|-------------------|--------|-------|
-| Windows 11, same Wi-Fi | | |
-| Windows 10, same Wi-Fi | | |
-| Wired desktop + Wi-Fi mobile | | |
-| Public Wi-Fi / AP isolation | | |
-| Enterprise Wi-Fi | | |
-
-### Known Limitations
-- [Limitation discovered during testing]
-
-### Recommendations
-- [What should the architecture adopt?]
-
-### ADR Updates
-- [Which ADRs were confirmed, which were changed?]
 
 ## Index
 
-| Spike | Question | Depends On | Status |
-|-------|----------|------------|--------|
-| [ep-001](./ep-001-discovery-pairing/) | Discovery, pairing, transport, encryption | — | Planned |
-| [ep-002](./ep-002-android-lifecycle/) | Android background execution, Doze, foreground service | EP-001 | Planned |
-| [ep-003](./ep-003-windows-lifecycle/) | Windows service, firewall, startup, sleep/wake | EP-001 | Planned |
-| [ep-004](./ep-004-configuration-ownership/) | Configuration ownership and multi-device authority | EP-001, EP-003 | Planned |
-| [ep-005](./ep-005-network-resilience/) | Network resilience — DHCP, hostname, AP isolation, captive portals | EP-001 | Planned |
-| [ep-006](./ep-006-action-execution/) | Action execution — process isolation, timeout, cancellation | EP-003 | Planned |
-| [ep-007](./ep-007-protocol-evolution/) | Protocol evolution — version negotiation, backward compatibility | EP-001 | Planned |
+| Spike | Version | Status |
+|-------|---------|--------|
+| [ep-001](./ep-001-discovery-pairing/) | v0.1 — Discovery & Transport | ✅ Certified |
+| [ep-002](./ep-002-pairing/) | v0.1 — Pairing & Trust | 🔜 Planned |
+| EP-003 | v0.1 — Command Execution | 📋 Future |

@@ -126,13 +126,15 @@ Discovery complete: 1 device(s) in 67ms
 
 ## Recommendation for EP-002
 
-**Proceed to EP-002 with the following focus areas:**
+**Proceed to EP-002 — Pairing & Trust with the following focus areas:**
 
-1. **Discovery repeatability.** Run 10 discovery scans, record latency distribution.
-2. **Logging cleanup.** Remove or demote temporary INFO logs added in EP-001.
-3. **UI polish.** Show discovered device IP/port in the device list.
-4. **Desktop-side connection logging.** Log `New connection from <ip>:<port>` on the Rust agent.
-5. **APK signing.** Generate a signed release APK for side-loading outside Android Studio.
+1. **Pair request flow.** Phone requests pairing, desktop approves (console prompt).
+2. **Trusted device persistence.** Desktop remembers paired devices across restarts.
+3. **Auto-reconnect.** Trusted devices reconnect without re-pairing.
+4. **Unknown device rejection.** Untrusted connections are denied.
+5. **Pair/unpair management.** List and remove paired devices from both sides.
+
+See `spikes/ep-002-pairing/README.md` for the full specification.
 
 ### Architecture freeze
 
@@ -140,4 +142,4 @@ Architecture remains frozen at `v0.1-architecture-freeze`. No new ADRs, abstract
 
 ### Risk
 
-Connection and transport validated in EP-001. No protocol changes expected for EP-002 unless repeatability or failure testing reveals unforeseen issues.
+Pairing introduces no protocol changes — only new message types over the existing WebSocket. No architectural risk anticipated.
