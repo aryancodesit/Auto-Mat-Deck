@@ -1,0 +1,126 @@
+# https://taskfile.dev
+version: '3'
+
+dotenv:
+  - .env
+
+tasks:
+
+  ## ──────────────────────────────────────
+  ##  Build
+  ## ──────────────────────────────────────
+
+  build:
+    desc: Build all applications and packages
+    cmds:
+      - task: build:protocol
+      - task: build:mobile
+      - task: build:desktop
+
+  build:protocol:
+    desc: Validate and compile protocol definitions
+    cmds:
+      - echo "Protocol build — add compile step here"
+
+  build:mobile:
+    desc: Build the Android application
+    dir: apps/mobile
+    cmds:
+      - echo "Mobile build — add Gradle command here"
+
+  build:desktop:
+    desc: Build the desktop agent
+    dir: apps/desktop
+    cmds:
+      - echo "Desktop build — add compile command here"
+
+  ## ──────────────────────────────────────
+  ##  Lint
+  ## ──────────────────────────────────────
+
+  lint:
+    desc: Run all linters
+    cmds:
+      - task: lint:protocol
+      - task: lint:mobile
+      - task: lint:desktop
+
+  lint:protocol:
+    desc: Lint protocol definitions
+    cmds:
+      - echo "Protocol lint — add linter here"
+
+  lint:mobile:
+    desc: Lint Android source
+    dir: apps/mobile
+    cmds:
+      - echo "Mobile lint — add ktlint / detekt here"
+
+  lint:desktop:
+    desc: Lint desktop source
+    dir: apps/desktop
+    cmds:
+      - echo "Desktop lint — add linter here"
+
+  ## ──────────────────────────────────────
+  ##  Test
+  ## ──────────────────────────────────────
+
+  test:
+    desc: Run all tests
+    cmds:
+      - task: test:protocol
+      - task: test:mobile
+      - task: test:desktop
+
+  test:protocol:
+    desc: Run protocol unit tests
+    cmds:
+      - echo "Protocol tests — add test command here"
+
+  test:mobile:
+    desc: Run mobile unit tests
+    dir: apps/mobile
+    cmds:
+      - echo "Mobile tests — add Gradle test command here"
+
+  test:desktop:
+    desc: Run desktop unit tests
+    dir: apps/desktop
+    cmds:
+      - echo "Desktop tests — add test command here"
+
+  ## ──────────────────────────────────────
+  ##  Spikes
+  ## ──────────────────────────────────────
+
+  spike:discovery:
+    desc: Run the discovery/pairing validation spike
+    dir: spikes/ep-001-discovery-pairing
+    cmds:
+      - echo "Run spike — add platform-specific commands here"
+
+  ## ──────────────────────────────────────
+  ##  Utility
+  ## ──────────────────────────────────────
+
+  clean:
+    desc: Remove all build artifacts
+    cmds:
+      - echo "Clean — add clean commands here"
+
+  ci:
+    desc: Run the full CI pipeline locally (lint → test → build)
+    cmds:
+      - task: lint
+      - task: test
+      - task: build
+
+  release:
+    desc: Prepare a new release (placeholder)
+    cmds:
+      - echo "Release — add release automation here"
+
+  default:
+    desc: Show available tasks
+    cmd: task --list

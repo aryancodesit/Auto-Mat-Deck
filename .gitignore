@@ -1,0 +1,44 @@
+# Local development environment
+local/
+.env
+*.local
+
+# Android / Gradle
+apps/mobile/.gradle/
+apps/mobile/build/
+apps/mobile/local.properties
+*.apk
+*.aab
+*.dex
+*.class
+
+# Desktop
+apps/desktop/build/
+apps/desktop/target/
+apps/desktop/bin/
+
+# Protocol / shared
+packages/*/node_modules/
+packages/*/build/
+packages/*/dist/
+packages/*/target/
+
+# Spikes (build artifacts only; source is tracked)
+spikes/**/build/
+spikes/**/target/
+spikes/**/bin/
+spikes/**/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
