@@ -111,11 +111,29 @@ Expected log lines observed:
 
 ### Results
 
-**⏭️ NOT TESTED — EP-001 scope limited to environment validation + discovery.
+| Run | Connected? | Desktop endpoint | Notes |
+|-----|------------|------------------|-------|
+| 1 | ✅ Yes | ws://192.168.29.59:9742 | Connected successfully; status shown in UI |
+
+**Result:** ✅ **PASS** — WebSocket connection established from Android to desktop agent.
 
 ---
 
-## Phase 3 — Transport Validation (Ping/Pong) — ⏭️ Skipped
+## Phase 3 — Transport Validation (Ping/Pong)
+
+**Goal:** Verify bidirectional ping/pong messaging over the WebSocket connection.
+
+**Steps:**
+1. After connection, tap "Send Ping"
+2. Observe "PONG received" in response area
+
+### Results
+
+| Run | Ping Sent | PONG Received | RTT (approximate) | Notes |
+|-----|-----------|---------------|-------------------|-------|
+| 1 | ✅ Yes | ✅ Yes | <500 ms | Ping/pong exchange confirmed via UI response text |
+
+**Result:** ✅ **PASS** — Bidirectional JSON messaging works over WebSocket.
 
 ## Phase 4 — Stability — ⏭️ Skipped
 
@@ -147,14 +165,14 @@ Expected log lines observed:
 |-------|--------|------------------|
 | P0 — Environment | ✅ PASS | Desktop PASS. Android build resolved (embedded JDK 21 in Android Studio). ENV-001 closed. |
 | P1 — Discovery | ✅ PASS | Desktop discovered in ~67 ms after service type fix (`_amd._tcp.local.` → `_amd._tcp.`). APP-001 closed. |
-| P2 — Connection | ⏭️ Skipped | EP-001 scope: environment + discovery only |
-| P3 — Transport | ⏭️ Skipped | |
+| P2 — Connection | ✅ PASS | Phone connected to ws://192.168.29.59:9742 |
+| P3 — Transport | ✅ PASS | Ping/pong RTT <500 ms |
 | P4 — Stability | ⏭️ Skipped | |
 | P5 — Failure | ⏭️ Skipped | |
 | P6 — Stress | ⏭️ Skipped | |
 | P7 — Repeatability | ⏭️ Skipped | |
 | Multi-interface | ⏭️ Skipped | Desktop has Wi-Fi + VirtualBox Host-Only; discovery tested on Wi-Fi only |
-| **Gate** | **✅ PASS** | Core transport architecture validated on real hardware |
+| **Gate** | **✅ PASS** | Environment, discovery, connection, and transport validated on real hardware. Stability, stress, failure, and repeatability deferred to EP-002. |
 
 ## Known Issues
 

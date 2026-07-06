@@ -2,6 +2,8 @@
 
 **Automated Material Deck** — A local-first platform for creating, managing, and executing automated workflows across mobile and desktop environments.
 
+**Status:** Early development (pre-v0.1.0) · EP-001 complete — mDNS discovery, WebSocket transport, and ping/pong validated on real hardware.
+
 ## Platform
 
 Auto-Mat-Deck is a multi-application platform:
