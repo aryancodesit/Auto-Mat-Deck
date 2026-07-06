@@ -47,6 +47,10 @@ Thumbs.db
 .vscode/
 *.iml
 
+# Local documentation (not published)
+docs/
+AI_CONTEXT.md
+
 # Logs
 *.log
 *.logcat
