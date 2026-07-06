@@ -19,7 +19,7 @@ Auto-Mat-Deck is a multi-application platform:
 AUTO_MAT_DECK/
 ├── apps/           # Platform applications (mobile + desktop)
 ├── packages/       # Shared protocol and resources
-├── spikes/         # Validation prototypes
+├── docs/           # Architecture, decisions, UI docs, release notes
 ├── tools/          # Developer scripts and templates
 └── .github/        # CI/CD workflows
 ```
@@ -33,6 +33,8 @@ task lint       # Run all linters
 task test       # Run all tests
 task ci         # Full CI pipeline locally
 ```
+
+See [AI_CONTEXT.md](./AI_CONTEXT.md) for the complete project guide — architecture rules, naming conventions, versioning, and standards every contributor follows.
 
 ## License
 
