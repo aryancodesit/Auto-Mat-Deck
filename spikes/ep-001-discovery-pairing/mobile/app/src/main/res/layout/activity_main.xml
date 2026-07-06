@@ -35,6 +35,14 @@
         android:background="#EEE"
         android:text="Ready" />
 
+    <Button
+        android:id="@+id/btnPair"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="Pair with Desktop"
+        android:visibility="gone" />
+
     <TextView
         android:id="@+id/responseText"
         android:layout_width="match_parent"
