@@ -2,6 +2,20 @@
 
 > Every AI tool reads this file first to understand the project before generating code or suggestions.
 
+> ╔══════════════════════════════════════════════════════╗
+> ║  CURRENT PROJECT STATE                               ║
+> ║                                                      ║
+> ║  Phase:     EP-001 Hardware Validation               ║
+> ║  Status:    Architecture FROZEN                       ║
+> ║                                                      ║
+> ║  Allowed:   Bug fixes, build fixes, testing,         ║
+> ║             evidence collection, manifest/config      ║
+> ║                                                      ║
+> ║  Forbidden: New abstractions, new managers,          ║
+> ║             new ADRs, new protocols, feature          ║
+> ║             expansion, new architecture docs          ║
+> ╚══════════════════════════════════════════════════════╝
+
 ---
 
 ## Project Vision
@@ -86,6 +100,7 @@ AUTO_MAT_DECK/
 - **Protocol (`packages/protocol/`):** TBD — format chosen after transport spike validates candidates.
 - **Shared (`packages/shared/`):** Resources only — no runtime code in any language.
 - **Spikes (`spikes/`):** Any language, any framework, any dependency. No constraints. Throwaway code.
+- **Spike rule:** Developer productivity > build reproducibility. Use IDE defaults during spikes. Standardize CLI/CI builds only after the spike graduates into production code.
 
 ### General Principles
 
@@ -93,6 +108,7 @@ AUTO_MAT_DECK/
 - Favor immutability. Data classes/records for all DTOs.
 - Explicit error handling. No silent failures. No unchecked exceptions across component boundaries.
 - Document public APIs with doc comments. Keep them brief and factual.
+- **Sensitive logging.** Never log clear-text secrets. Encode sanitization in the type system — every action/event type should implement `toLogString()` or `redacted()` for automatic safe logging. See `docs/ui/developer-diagnostics.md#sensitive-logging` for detailed rules.
 
 ---
 
@@ -114,6 +130,10 @@ AUTO_MAT_DECK/
 - **Integration tests** validate mobile ↔ desktop communication over a real transport. These run nightly.
 - **No UI tests in CI** (initially). Android UI tests run locally or on demand.
 - Tests live alongside the code they test (`__tests__/` or language-specific convention).
+- **Emulator vs hardware** is task-dependent, not a fixed ratio:
+  Use emulators for UI, pairing flow, QR screens, OTP screens, and protocol logic.
+  Use real hardware for mDNS, camera, networking, and any feature that depends on the local network or physical platform behavior.
+- **Environment rule.** If an external toolchain (Android Studio, SDK, JDK, Gradle, Rust, etc.) is missing or misconfigured, stop after identifying the root cause. Do not attempt downloads, installations, or upgrades unless explicitly instructed by the user.
 
 ---
 

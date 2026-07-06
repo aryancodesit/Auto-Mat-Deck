@@ -197,19 +197,95 @@ This spike validates the foreground path only. Background constraints are invest
 
 - Source code in this directory (throwaway — never merged).
 - Screenshots or video of each onboarding method.
-- Completed evidence template (measurements, compatibility matrix, thresholds, limitations).
+- Completed evidence template — see [`evidence.md`](./evidence.md) (measurements, compatibility matrix, thresholds, limitations, artifacts).
 - Recommendations for ADR-006 and any new ADRs.
 
 ## Outcome
 
 Result feeds into:
 
-- ADR-006 (Transport Evaluation) — confirmed or updated.
+- ADR-006 (Transport Evaluation) — accepted. **Wi-Fi (WebSocket)** is the primary command transport.
+  **BLE** deferred as a future `PresenceProvider` (proximity events only — never returns endpoints).
+- **Provider architecture** — Two distinct abstractions:
+  - **Discovery Providers** (Android `DiscoveryProvider` interface) resolve desktop identity into a
+    connection endpoint. mDNS is the first implementation. Future: cached hostname, cached IP,
+    manual entry, enterprise DNS.
+  - **Presence Providers** (defined interface, no implementation yet) emit proximity events and
+    trigger discovery. Reserved for BLE, NFC, UWB.
+  - **Desktop side**: `AdvertisementProvider` trait for announcing desktop presence (mDNS first).
+- No transport code depends on the presence layer. No presence provider fabricates endpoint data.
 - Bootstrap UI decision (which onboarding method to adopt).
 - Hostname-resolution fallback approach.
 - MITM mitigation requirements for security ADR.
 - Message format decision (JSON sufficient or need schema).
 
+## Implementation
+
+### Phase 1 — Complete
+
+| Component | Location | Language | Status |
+|-----------|----------|----------|--------|
+| Windows desktop | `desktop/` | Rust | ✅ Compiles and runs |
+| Android mobile | `mobile/` | Kotlin | ✅ Source complete (requires Android Studio + SDK to build) |
+
+#### Desktop Agent (Windows)
+- **Build**: `cd desktop && cargo build --release`
+- **Run**: `RUST_LOG=info ./target/release/amd-desktop.exe`
+- **Announcement architecture**: Pluggable provider model via `AdvertisementProvider` trait. `MdnsAnnouncer` is the first implementation.
+- **mDNS**: Announces `_amd._tcp.local.` with device ID, type, protocol version, OS, and provider tag.
+- **Future providers**: Trait ready for BLE advertisement, DNS-SD, or other announcement mechanisms.
+- **WebSocket**: Listens on port 9742. Accepts JSON messages. Responds to `{"type": "ping"}` with `{"type": "pong", "echo": ...}`.
+- **Dependencies**: mdns-sd, tokio-tungstenite, serde_json, env_logger.
+
+> **⚠ Note on device identity:** Current prototype uses a hostname-derived ID (`amd-{hostname}`) for
+> convenience. This is **not** a validated persistent identity. Hostnames change (rename, reinstall,
+> clone, corporate policy). Persistent device identity will be evaluated during Phase 2.
+
+#### Mobile App (Android)
+- **Build**: Open `mobile/` in Android Studio, sync Gradle, run on device.
+- **Discovery architecture**: Pluggable provider model via `DiscoveryProvider` interface. `DiscoveryManager` orchestrates providers in priority order, returning first non-empty result with deduplication.
+- **mDNS**: `MdnsDiscoveryProvider` uses Android's `NsdManager` to discover `_amd._tcp.local.` services. Non-blocking timeout via `Handler.postDelayed`.
+- **Future providers**: Interface ready for cached hostname, cached IP, BLE, manual entry. Register via `discoveryManager.register(provider)`.
+- **Discovery timing**: `DiscoveryManager` measures total elapsed time across all providers. Reports latency in the UI and logs.
+- **UI**: "Scan for Desktops" button → list of discovered devices (with latency shown) → tap to connect.
+- **WebSocket**: Uses OkHttp WebSocket client. Sends `{"type": "ping"}` on connect. Displays `pong` response with round-trip timing.
+- **Dependencies**: okhttp3, kotlinx-coroutines, androidx-appcompat, androidx-activity-ktx. No ML Kit (QR scanning deferred to Phase 2).
+
+### Phase 2 — Not Started
+Pairing, key exchange, and MITM validation.
+
+### Phase 3 — Not Started
+Encrypted messaging.
+
+## Evidence
+
+### Phase 1 — Discovery & Transport
+
+Thresholds (from governance):
+| Metric | PASS | WARNING | FAIL | Measured |
+|--------|------|---------|------|----------|
+| Discovery time | <5 s | 5–10 s | >10 s | — |
+| WebSocket connect | <2 s | 2–5 s | >5 s | — |
+| Ping/pong round-trip | <500 ms | 500–1000 ms | >1000 ms | — |
+
+### Compatibility
+| Scenario | Expected | Result |
+|----------|----------|--------|
+| Wired desktop + Wi-Fi phone | Pass | — |
+| Windows Firewall (allow) | Pass | — |
+| Windows Firewall (deny) | Block | — |
+| Both on same subnet | Pass | — |
+| Cross-subnet (no mDNS proxy) | Fail | — |
+
+> ⚠ **Note on device identity:** The prototype uses `amd-{hostname}` as device ID. This is a
+> temporary convenience, not a validated persistent identity. See "Risks" section below.
+
+### Known Limitations (Phase 1)
+1. Device ID is hostname-derived and will change on rename/reinstall. Addressed in Phase 2 identity work.
+2. Android side requires SDK 26+ (Android 8.0) due to NsdManager API.
+3. No encryption (plaintext WebSocket). Phase 3 adds Noise protocol.
+4. No pairing — any client on the network can connect. Phase 2 adds QR-code trust-on-first-use.
+
 ## Status
 
-Planned.
+Phase 1 implemented. Ready for testing on real hardware.

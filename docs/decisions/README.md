@@ -15,7 +15,7 @@ An Architectural Decision Record captures a significant decision, the context be
 | 003 | [Independent versioning](./ADR-003-independent-versioning.md) | 2026-07-06 | Accepted |
 | 004 | [Trunk-based development](./ADR-004-trunk-based-development.md) | 2026-07-06 | Accepted |
 | 005 | [Synchronization model](./ADR-005-synchronization-model.md) | 2026-07-06 | Accepted |
-| 006 | [Transport evaluation](./ADR-006-transport-evaluation.md) | 2026-07-06 | Proposed |
+| 006 | [Transport evaluation](./ADR-006-transport-evaluation.md) | 2026-07-06 | Accepted |
 | 007 | [Plugin architecture (deferred)](./ADR-007-plugin-architecture.md) | 2026-07-06 | Proposed |
 
 ## Template

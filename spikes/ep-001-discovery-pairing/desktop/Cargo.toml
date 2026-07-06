@@ -1,0 +1,14 @@
+[package]
+name = "amd-desktop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mdns-sd = "0.14"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+hostname = "0.4"
