@@ -111,6 +111,7 @@ class MainActivity : AppCompatActivity() {
         statusText.text = "Connecting to ${device.name}..."
         responseText.text = "Identifying..."
         btnPair.visibility = View.GONE
+        btnPair.isEnabled = false
 
         val wsUrl = "ws://${device.host}:${device.port}"
         Log.i(TAG, "Connecting to $wsUrl (device=${device.name})")
@@ -154,6 +155,7 @@ class MainActivity : AppCompatActivity() {
                                 statusText.text = "Not paired with ${device.name}"
                                 responseText.text = "Tap Pair to continue"
                                 btnPair.visibility = View.VISIBLE
+                                btnPair.isEnabled = true
                             }
                         }
 
@@ -210,6 +212,8 @@ class MainActivity : AppCompatActivity() {
                 statusText.post {
                     statusText.text = "Connection failed: $detail"
                     responseText.text = "FAILED"
+                    btnPair.isEnabled = false
+                    btnPair.visibility = View.GONE
                 }
             }
 
@@ -220,24 +224,32 @@ class MainActivity : AppCompatActivity() {
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "Connection closed for ${device.name}: ($code) $reason")
-                statusText.post { statusText.text = "Connection closed: $reason" }
+                statusText.post {
+                    statusText.text = "Connection closed: $reason"
+                    btnPair.isEnabled = false
+                    btnPair.visibility = View.GONE
+                }
             }
         })
     }
 
     private fun sendPairRequest() {
-        currentWebSocket?.let { ws ->
-            Log.i(TAG, "Sending pair_request (device_id=$deviceId)")
-            statusText.text = "Requesting pairing..."
-            responseText.text = "Waiting for desktop approval..."
-            val pairReq = JSONObject().apply {
-                put("type", "pair_request")
-                put("device_id", deviceId)
-                put("device_name", "Android-${Build.MODEL}")
-            }
-            val sent = ws.send(pairReq.toString())
-            Log.i(TAG, "pair_request sent, result=$sent")
+        val ws = currentWebSocket
+        if (ws == null) {
+            Log.w(TAG, "sendPairRequest: currentWebSocket is null")
+            statusText.text = "Not connected. Scan and connect first."
+            return
         }
+        Log.i(TAG, "Sending pair_request (device_id=$deviceId)")
+        statusText.text = "Requesting pairing..."
+        responseText.text = "Waiting for desktop approval..."
+        val pairReq = JSONObject().apply {
+            put("type", "pair_request")
+            put("device_id", deviceId)
+            put("device_name", "Android-${Build.MODEL}")
+        }
+        val sent = ws.send(pairReq.toString())
+        Log.i(TAG, "pair_request sent, result=$sent")
     }
 
     private fun sendPing(webSocket: WebSocket) {

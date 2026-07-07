@@ -62,7 +62,7 @@ class MdnsDiscoveryProvider(private val context: Context) : DiscoveryProvider {
                                 protocolVersions = info.attributes["protocolVersions"]
                                     ?.let { String(it, Charsets.UTF_8) } ?: "unknown"
                             )
-                            Log.i(TAG, "Resolved: ${device.host}:${device.port} name=${device.name}")
+                            Log.i(TAG, "Resolved: ${device.host}:${device.port} name=${device.name} (t=${System.currentTimeMillis()})")
                             results.add(device)
                         }
                     })
