@@ -2,7 +2,7 @@
 
 **Automated Material Deck** — A local-first platform for creating, managing, and executing automated workflows across mobile and desktop environments.
 
-**Status:** Early development (pre-v0.1.0) · EP-001 complete — mDNS discovery, WebSocket transport, and ping/pong validated on real hardware.
+**Status:** v0.1 foundations complete — Discovery, Trust, Packaging, and 5 Remote Actions validated on real hardware.
 
 ## Platform
 
