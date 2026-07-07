@@ -1,6 +1,39 @@
 use std::collections::HashMap;
 use serde_json::{json, Value};
 
+#[cfg(windows)]
+use winrt_notification::{Duration, Sound, Toast};
+
+#[cfg(windows)]
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn shell_execute(verb: &str, file: &str) -> Result<(), ActionError> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    unsafe {
+        let wide_verb = to_wide(verb);
+        let wide_file = to_wide(file);
+        let result = ShellExecuteW(
+            std::ptr::null_mut(),
+            wide_verb.as_ptr(),
+            wide_file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+        if (result as isize) <= 32 {
+            return Err(ActionError {
+                message: format!("ShellExecuteW failed for '{}'", file),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub struct ActionError {
     pub message: String,
 }
@@ -51,14 +84,20 @@ impl Action for LaunchAction {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ActionError { message: "Missing 'app' in payload".into() })?;
 
-        let child = std::process::Command::new("cmd")
-            .args(["/C", "start", "", app])
-            .spawn()
-            .map_err(|e| ActionError {
-                message: format!("Failed to launch '{}': {}", app, e),
-            })?;
+        #[cfg(windows)]
+        {
+            shell_execute("open", app)?;
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new(app)
+                .spawn()
+                .map_err(|e| ActionError {
+                    message: format!("Failed to launch '{}': {}", app, e),
+                })?;
+        }
 
-        Ok(json!({"pid": child.id()}))
+        Ok(json!({"launched": app}))
     }
 }
 
@@ -69,12 +108,8 @@ impl Action for OpenUrlAction {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ActionError { message: "Missing 'url' in payload".into() })?;
 
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-            .map_err(|e| ActionError {
-                message: format!("Failed to open URL '{}': {}", url, e),
-            })?;
+        #[cfg(windows)]
+        shell_execute("open", url)?;
 
         Ok(json!({"opened": url}))
     }
@@ -87,12 +122,8 @@ impl Action for OpenFileAction {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ActionError { message: "Missing 'path' in payload".into() })?;
 
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", path])
-            .spawn()
-            .map_err(|e| ActionError {
-                message: format!("Failed to open file '{}': {}", path, e),
-            })?;
+        #[cfg(windows)]
+        shell_execute("open", path)?;
 
         Ok(json!({"opened": path}))
     }
@@ -143,28 +174,13 @@ impl Action for NotifyAction {
 
 #[cfg(windows)]
 fn show_windows_toast(title: &str, body: &str) -> Result<(), ActionError> {
-    let escaped_title = title.replace('\'', "''");
-    let escaped_body = body.replace('\'', "''");
-
-    let script = format!(
-        r#"
-$null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
-$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-$xml.LoadXml("<toast><visual><binding template='ToastText02'><text id='1'>{title}</text><text id='2'>{body}</text></binding></visual></toast>")
-$toast = New-Object Windows.UI.Notifications.ToastNotification($xml)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('AutoMatDeck').Show($toast)
-"#,
-        title = escaped_title,
-        body = escaped_body,
-    );
-
-    match std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .spawn()
-    {
-        Ok(_) => Ok(()),
-        Err(e) => Err(ActionError {
-            message: format!("Failed to show notification: {}", e),
-        }),
-    }
+    Toast::new(Toast::POWERSHELL_APP_ID)
+        .title(title)
+        .text1(body)
+        .sound(Some(Sound::SMS))
+        .duration(Duration::Short)
+        .show()
+        .map_err(|e| ActionError {
+            message: format!("Failed to show toast: {:?}", e),
+        })
 }

@@ -54,3 +54,4 @@ AI_CONTEXT.md
 # Logs
 *.log
 *.logcat
+*.expanded.rs

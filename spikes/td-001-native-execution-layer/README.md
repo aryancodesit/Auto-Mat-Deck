@@ -1,6 +1,6 @@
 # TD-001 — Native Execution Layer
 
-**Status**: 📋 Planned (v0.2)
+**Status**: ✅ Implemented and verified
 
 **Origin**: Security review of EP-003 spike identified two shell interpreter dependencies.
 
@@ -32,24 +32,32 @@ Replace every shell interpreter in the execution path while preserving:
 
 ### Specific replacements
 
-| Current | Target |
-|---------|--------|
-| `cmd /C start "" <app>` | `std::process::Command::new(app).spawn()` or `CreateProcessW` |
-| `cmd /C start "" <url>` | `ShellExecuteExW` with `open` verb |
-| `cmd /C start "" <path>` | `ShellExecuteExW` with `open` verb |
-| `powershell.exe -Command <toast>` | Native WinRT toast via `windows` crate or tray-icon notification API |
+| Current | Target | Implemented |
+|---------|--------|-------------|
+| `cmd /C start "" <app>` | `ShellExecuteW` (`open` verb) | ✅ `shell_execute()` helper in `actions.rs` |
+| `cmd /C start "" <url>` | `ShellExecuteW` (`open` verb) | ✅ `shell_execute()` helper in `actions.rs` |
+| `cmd /C start "" <path>` | `ShellExecuteW` (`open` verb) | ✅ `shell_execute()` helper in `actions.rs` |
+| `powershell.exe -Command <toast>` | `winrt-notification` crate (WinRT) | ✅ `show_windows_toast()` in `actions.rs` |
 
 ## Verification
 
-After each replacement, all 5 EP-003 actions must still pass:
+All 5 actions verified with native implementations **2026-07-07**:
+
+| Action | Implementation | Result |
+|--------|---------------|--------|
+| `launch chrome` | `ShellExecuteW("open", "chrome")` | ✅ Chrome opened via App Paths registry |
+| `open_url github` | `ShellExecuteW("open", "https://...")` | ✅ Default browser opened |
+| `open_file calc` | `ShellExecuteW("open", "C:\Windows\...\calc.exe")` | ✅ Calculator launched |
+| `lock` | `LockWorkStation()` | ✅ WorkStation locked |
+| `notify` | `winrt_notification::Toast` | ✅ Windows toast notification appeared |
+
+Execution path after TD-001:
 
 ```
-launch chrome    → chrome.exe opens
-open_url github  → browser opens
-open_file calc   → Calculator opens
-lock             → WorkStation locks
-notify           → toast appears
+Android → Rust → Win32 API (ShellExecuteW / LockWorkStation / winrt-notification) → Target
 ```
+
+No `cmd.exe`, `powershell.exe`, or shell interpreters in the action path.
 
 ## Non-goals
 
