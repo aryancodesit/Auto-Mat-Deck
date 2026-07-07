@@ -1,21 +1,74 @@
+// EP-002.5: Desktop Packaging
+// - System tray with menu (Status, Open Logs, Exit)
+// - File logging to %APPDATA%/AutoMatDeck/agent.log
+// - Windows subsystem (no console window in release)
+// - CLI: --install (auto-start), --uninstall (remove auto-start)
+// - Single-instance via named mutex
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod actions;
 mod discovery;
 
-use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use discovery::AdvertisementProvider;
 use futures_util::{SinkExt, StreamExt};
-use log::{info, warn};
+use log::{info, warn, error};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
+use tray_icon::menu::{Menu, MenuItem, CheckMenuItem, PredefinedMenuItem, MenuEvent};
+use tray_icon::{TrayIconBuilder, TrayIcon, Icon};
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::CreateMutexW;
+#[cfg(windows)]
+use windows_sys::Win32::System::Registry::{
+    RegOpenKeyExW, RegSetValueExW, RegDeleteValueW, RegCloseKey, RegQueryValueExW,
+    HKEY_CURRENT_USER, KEY_SET_VALUE, KEY_QUERY_VALUE, REG_SZ,
+};
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    PeekMessageW, TranslateMessage, DispatchMessageW, MSG, PM_REMOVE,
+};
+
 const PORT: u16 = 9742;
+const PAIR_TIMEOUT_SECS: u64 = 120;
+#[cfg(windows)]
+const MUTEX_NAME: &str = "Local\\AutoMatDeck_Agent";
+#[cfg(windows)]
+const REGISTRY_PATH: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+#[cfg(windows)]
+const REGISTRY_VALUE_NAME: &str = "AutoMatDeck Agent";
+
+static ACTIONS: LazyLock<actions::ActionRegistry> = LazyLock::new(|| actions::ActionRegistry::new());
+
+// --- Shared state for tray-based pairing ---
+
+struct PendingPair {
+    device_id: String,
+    device_name: String,
+    responder: tokio::sync::oneshot::Sender<bool>,
+}
+
+type AppState = Arc<Mutex<Option<PendingPair>>>;
+
+struct MenuItems {
+    tray: TrayIcon,
+    status: MenuItem,
+    start_on_login: CheckMenuItem,
+    logs: MenuItem,
+    exit: MenuItem,
+}
 
 // --- Trusted device store ---
 
@@ -90,25 +143,13 @@ fn touch_device(device_id: &str) {
     }
 }
 
-// --- Console approval (async, non-blocking) ---
+// --- WebSocket handler (pairing via tray approval) ---
 
-async fn prompt_approval(device_name: &str, device_id: &str) -> bool {
-    println!("\n=== Pairing Request ===");
-    println!("Device: {} ({})", device_name, device_id);
-    print!("Accept? [y/N]: ");
-    std::io::stdout().flush().ok();
-
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    if let Ok(Some(line)) = lines.next_line().await {
-        line.trim().eq_ignore_ascii_case("y")
-    } else {
-        false
-    }
-}
-
-// --- WebSocket handler ---
-
-async fn handle_connection(stream: tokio::net::TcpStream, peer: SocketAddr) {
+async fn handle_connection(
+    stream: tokio::net::TcpStream,
+    peer: SocketAddr,
+    app_state: AppState,
+) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
@@ -190,12 +231,38 @@ async fn handle_connection(stream: tokio::net::TcpStream, peer: SocketAddr) {
                             let device_name = req
                                 .get("device_name")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("unknown");
+                                .unwrap_or("unknown")
+                                .to_string();
 
-                            let approved = prompt_approval(device_name, &id).await;
+                            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+
+                            {
+                                let mut state = app_state.lock().unwrap();
+                                *state = Some(PendingPair {
+                                    device_id: id.clone(),
+                                    device_name: device_name.clone(),
+                                    responder: resp_tx,
+                                });
+                            }
+                            info!("Pair request from {} ({}), awaiting tray approval", device_name, id);
+
+                            let approved = match tokio::time::timeout(
+                                Duration::from_secs(PAIR_TIMEOUT_SECS),
+                                resp_rx,
+                            )
+                            .await
+                            {
+                                Ok(Ok(true)) => true,
+                                _ => false,
+                            };
+
+                            {
+                                let mut state = app_state.lock().unwrap();
+                                *state = None;
+                            }
 
                             if approved {
-                                add_device(&id, device_name);
+                                add_device(&id, &device_name);
                                 trusted = true;
                                 info!("Paired with device: {} ({})", device_name, id);
                                 let resp = json!({"type": "pair_accepted", "device_id": id});
@@ -207,7 +274,7 @@ async fn handle_connection(stream: tokio::net::TcpStream, peer: SocketAddr) {
                                 let resp = json!({
                                     "type": "pair_rejected",
                                     "device_id": id,
-                                    "reason": "User declined"
+                                    "reason": "User declined or timeout"
                                 });
                                 let _ = write
                                     .send(Message::Text(resp.to_string().into()))
@@ -236,6 +303,68 @@ async fn handle_connection(stream: tokio::net::TcpStream, peer: SocketAddr) {
                                 write.send(Message::Text(resp_text.into())).await
                             {
                                 warn!("Failed to send pong to {}: {}", peer, e);
+                                break;
+                            }
+                        }
+
+                        "action" => {
+                            if !trusted {
+                                let rid = req
+                                    .get("request_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let resp = json!({
+                                    "type": "error",
+                                    "request_id": rid,
+                                    "message": "Device not paired. Complete pairing first."
+                                });
+                                let _ = write
+                                    .send(Message::Text(resp.to_string().into()))
+                                    .await;
+                                continue;
+                            }
+
+                            let request_id = req
+                                .get("request_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+
+                            let action_name = req
+                                .get("action")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            let empty = json!({});
+                            let payload = req.get("payload").unwrap_or(&empty);
+
+                            info!(
+                                "Action from {}: action={}, request_id={}",
+                                peer, action_name, request_id
+                            );
+
+                            let result = ACTIONS.execute(action_name, payload);
+
+                            let resp = match result {
+                                Ok(data) => json!({
+                                    "type": "action_result",
+                                    "request_id": request_id,
+                                    "success": true,
+                                    "data": data
+                                }),
+                                Err(e) => json!({
+                                    "type": "action_result",
+                                    "request_id": request_id,
+                                    "success": false,
+                                    "error": e.message
+                                }),
+                            };
+
+                            if let Err(e) = write
+                                .send(Message::Text(resp.to_string().into()))
+                                .await
+                            {
+                                warn!("Failed to send action result to {}: {}", peer, e);
                                 break;
                             }
                         }
@@ -283,12 +412,376 @@ async fn handle_connection(stream: tokio::net::TcpStream, peer: SocketAddr) {
     }
 }
 
-// --- Main ---
+// --- EP-002.5: Windows helpers ---
 
-#[tokio::main]
-async fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+#[cfg(windows)]
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
 
+#[cfg(windows)]
+fn ensure_single_instance() -> Option<HANDLE> {
+    unsafe {
+        let wide = to_wide(MUTEX_NAME);
+        let handle = CreateMutexW(std::ptr::null(), 1, wide.as_ptr());
+        let err = GetLastError();
+        if handle.is_null() {
+            error!("Failed to create single-instance mutex");
+            return None;
+        }
+        if err == ERROR_ALREADY_EXISTS {
+            CloseHandle(handle);
+            println!("AutoMatDeck Agent is already running.");
+            std::process::exit(0);
+        }
+        Some(handle)
+    }
+}
+
+#[cfg(windows)]
+fn install_auto_start() {
+    let exe = std::env::current_exe().expect("Failed to get executable path");
+    let path_str = exe.to_string_lossy().to_string();
+    let value = if path_str.contains(' ') {
+        format!("\"{}\"", path_str)
+    } else {
+        path_str
+    };
+
+    unsafe {
+        let wide_path = to_wide(REGISTRY_PATH);
+        let wide_value_name = to_wide(REGISTRY_VALUE_NAME);
+        let wide_value = to_wide(&value);
+
+        let mut hkey = std::ptr::null_mut();
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_path.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut hkey,
+        );
+        if result != 0 {
+            error!("Failed to open registry key (error {})", result);
+            println!("Failed to open registry key. Run as administrator?");
+            return;
+        }
+
+        let result = RegSetValueExW(
+            hkey,
+            wide_value_name.as_ptr(),
+            0,
+            REG_SZ,
+            wide_value.as_ptr() as *const u8,
+            (wide_value.len() * 2) as u32,
+        );
+        RegCloseKey(hkey);
+
+        if result == 0 {
+            println!("Auto-start registered. Agent will start on next login.");
+        } else {
+            error!("Failed to set registry value (error {})", result);
+            println!("Failed to set registry value (error {})", result);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn uninstall_auto_start() {
+    unsafe {
+        let wide_path = to_wide(REGISTRY_PATH);
+        let wide_value_name = to_wide(REGISTRY_VALUE_NAME);
+
+        let mut hkey = std::ptr::null_mut();
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_path.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut hkey,
+        );
+        if result != 0 {
+            error!("Failed to open registry key (error {})", result);
+            println!("Failed to open registry key.");
+            return;
+        }
+
+        let result = RegDeleteValueW(hkey, wide_value_name.as_ptr());
+        RegCloseKey(hkey);
+
+        if result == 0 {
+            println!("Auto-start removed.");
+        } else {
+            println!("Auto-start was not registered (error {}).", result);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn is_auto_start_enabled() -> bool {
+    unsafe {
+        let wide_path = to_wide(REGISTRY_PATH);
+        let wide_value_name = to_wide(REGISTRY_VALUE_NAME);
+
+        let mut hkey = std::ptr::null_mut();
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_path.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut hkey,
+        );
+        if result != 0 {
+            return false;
+        }
+
+        let mut value_type: u32 = 0;
+        let mut buffer = [0u16; 512];
+        let mut size = (buffer.len() * 2) as u32;
+        let result = RegQueryValueExW(
+            hkey,
+            wide_value_name.as_ptr(),
+            std::ptr::null(),
+            &mut value_type,
+            buffer.as_mut_ptr() as *mut u8,
+            &mut size,
+        );
+        RegCloseKey(hkey);
+        result == 0
+    }
+}
+
+#[cfg(not(windows))]
+fn is_auto_start_enabled() -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn handle_cli_args() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "--install" => {
+                install_auto_start();
+                return true;
+            }
+            "--uninstall" => {
+                uninstall_auto_start();
+                return true;
+            }
+            other => {
+                eprintln!("Unknown argument: {}. Usage: {} [--install|--uninstall]", other, args[0]);
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(not(windows))]
+fn handle_cli_args() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        eprintln!("CLI arguments not supported on this platform.");
+        return true;
+    }
+    false
+}
+
+fn init_logging() {
+    let data_dir = get_data_dir();
+    std::fs::create_dir_all(&data_dir).ok();
+    let log_path = data_dir.join("agent.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("Failed to open log file");
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .target(env_logger::Target::Pipe(Box::new(log_file)))
+        .init();
+    info!("AutoMatDeck Agent starting...");
+    info!("Log file: {}", log_path.display());
+
+    #[cfg(debug_assertions)]
+    {
+        println!("AutoMatDeck Agent v0.1.0");
+        println!("Logging to: {}", log_path.display());
+    }
+}
+
+fn make_icon() -> Icon {
+    let w = 32u32;
+    let h = 32u32;
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let cx = 16i32;
+            let cy = 16i32;
+            let dx = (x as i32 - cx).abs();
+            let dy = (y as i32 - cy).abs();
+            let dist = ((dx * dx + dy * dy) as f64).sqrt();
+            if dist < 14.0 {
+                rgba.push(0x42);
+                rgba.push(0x85);
+                rgba.push(0xF4);
+                rgba.push(0xFF);
+            } else if dist < 15.0 {
+                rgba.push(0xFF);
+                rgba.push(0xFF);
+                rgba.push(0xFF);
+                rgba.push(0xFF);
+            } else {
+                rgba.push(0x00);
+                rgba.push(0x00);
+                rgba.push(0x00);
+                rgba.push(0x00);
+            }
+        }
+    }
+    Icon::from_rgba(rgba, w, h).expect("Failed to create tray icon")
+}
+
+fn open_logs_folder() {
+    let path = get_data_dir();
+    let _ = std::process::Command::new("explorer")
+        .arg(path.to_string_lossy().to_string())
+        .spawn();
+}
+
+fn create_tray_icon() -> MenuItems {
+    let status = MenuItem::with_id("status", "Status: Running", false, None);
+    let start_on_login = CheckMenuItem::with_id("start_on_login", "Start with Windows", true, false, None);
+    let logs = MenuItem::with_id("logs", "Open Logs", true, None);
+    let exit = MenuItem::with_id("exit", "Exit", true, None);
+
+    let icon = make_icon();
+
+    let menu = build_default_menu(&status, &start_on_login, &logs, &exit);
+
+    let tray = TrayIconBuilder::new()
+        .with_tooltip("AutoMatDeck Agent")
+        .with_icon(icon)
+        .with_menu(Box::new(menu))
+        .build()
+        .expect("Failed to create tray icon");
+
+    // Sync checkbox with current registry state
+    #[cfg(windows)]
+    {
+        let enabled = is_auto_start_enabled();
+        start_on_login.set_checked(enabled);
+    }
+
+    MenuItems { tray, status, start_on_login, logs, exit }
+}
+
+fn build_default_menu(
+    status: &MenuItem,
+    start_on_login: &CheckMenuItem,
+    logs: &MenuItem,
+    exit: &MenuItem,
+) -> Menu {
+    let sep = PredefinedMenuItem::separator();
+    Menu::with_items(&[status, &sep, start_on_login, logs, exit])
+        .expect("Failed to build tray menu")
+}
+
+fn build_pending_menu(
+    status: &MenuItem,
+    start_on_login: &CheckMenuItem,
+    logs: &MenuItem,
+    exit: &MenuItem,
+    device_name: &str,
+) -> Menu {
+    let sep = PredefinedMenuItem::separator();
+    let info = MenuItem::with_id("pending_info", format!("⚠ Pending: {}", device_name), false, None);
+    let approve = MenuItem::with_id("approve", "  Approve", true, None);
+    let reject = MenuItem::with_id("reject", "  Reject", true, None);
+    Menu::with_items(&[status, &sep, &info, &approve, &reject, &sep, start_on_login, logs, exit])
+        .expect("Failed to build pending tray menu")
+}
+
+fn run_message_pump(
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    app_state: AppState,
+    menu: MenuItems,
+) {
+    info!("System tray icon active.");
+
+    let mut showing_pending = false;
+
+    loop {
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id == *menu.exit.id() {
+                info!("Exit requested from tray menu");
+                let _ = shutdown_tx.send(true);
+                return;
+            } else if event.id == *menu.logs.id() {
+                info!("Open Logs requested from tray menu");
+                open_logs_folder();
+            } else if event.id == *menu.start_on_login.id() {
+                let checked = menu.start_on_login.is_checked();
+                if checked {
+                    uninstall_auto_start();
+                    menu.start_on_login.set_checked(false);
+                    info!("Auto-start disabled");
+                } else {
+                    install_auto_start();
+                    menu.start_on_login.set_checked(true);
+                    info!("Auto-start enabled");
+                }
+            } else if event.id == "approve" {
+                let pair = app_state.lock().unwrap().take();
+                if let Some(p) = pair {
+                    info!("Pairing approved via tray: {} ({})", p.device_name, p.device_id);
+                    let _ = p.responder.send(true);
+                }
+            } else if event.id == "reject" {
+                let pair = app_state.lock().unwrap().take();
+                if let Some(p) = pair {
+                    info!("Pairing rejected via tray: {} ({})", p.device_name, p.device_id);
+                    let _ = p.responder.send(false);
+                }
+            }
+        }
+
+        // Poll AppState to update tray menu when pair request arrives or resolves
+        let has_pending = app_state.lock().unwrap().is_some();
+        if has_pending != showing_pending {
+            showing_pending = has_pending;
+            if has_pending {
+                let device_name = app_state.lock().unwrap().as_ref().unwrap().device_name.clone();
+                let new_menu = build_pending_menu(
+                    &menu.status, &menu.start_on_login, &menu.logs, &menu.exit, &device_name,
+                );
+                menu.tray.set_menu(Some(Box::new(new_menu)));
+            } else {
+                let new_menu = build_default_menu(
+                    &menu.status, &menu.start_on_login, &menu.logs, &menu.exit,
+                );
+                menu.tray.set_menu(Some(Box::new(new_menu)));
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+// --- Async server ---
+
+async fn async_main(
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    app_state: AppState,
+) {
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
@@ -329,8 +822,57 @@ async fn main() {
 
     info!("WebSocket server listening on ws://{}", addr);
 
-    while let Ok((stream, peer)) = listener.accept().await {
-        info!("New connection from {}", peer);
-        tokio::spawn(handle_connection(stream, peer));
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, peer)) => {
+                        info!("New connection from {}", peer);
+                        tokio::spawn(handle_connection(stream, peer, app_state.clone()));
+                    }
+                    Err(e) => {
+                        warn!("Accept error: {}", e);
+                        break;
+                    }
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("Shutdown signal received, stopping server...");
+                    break;
+                }
+            }
+        }
     }
+}
+
+// --- Main ---
+
+fn main() {
+    #[cfg(windows)]
+    {
+        let _mutex = ensure_single_instance();
+        if handle_cli_args() {
+            return;
+        }
+    }
+
+    init_logging();
+
+    let app_state: AppState = Arc::new(Mutex::new(None));
+    let menu = create_tray_icon();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let app_state_for_server = app_state.clone();
+    let server_handle = std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        rt.block_on(async_main(shutdown_rx, app_state_for_server));
+    });
+
+    run_message_pump(shutdown_tx, app_state, menu);
+
+    info!("Shutting down...");
+    let _ = server_handle.join();
+    info!("Goodbye.");
 }

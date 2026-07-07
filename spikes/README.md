@@ -41,12 +41,13 @@ Every metric in every spike must carry a three-tier threshold:
 ## Version Roadmap
 
 ```
-v0.1 — Core Communication
+v0.1 — Core Communication          ✅ Certified
 ├── EP-001  Discovery & Transport   ✅ Done
-├── EP-002  Pairing & Trust         🔜
-└── EP-003  Command Execution
+├── EP-002  Pairing & Trust         ✅ Done
+├── EP-002.5  Desktop Packaging     ✅ Done
+└── EP-003  Remote Actions          ✅ Done
         ↓
-  Release v0.1
+  Release v0.1 — All foundations complete
 
 v0.2 — Mobile Command Deck (pages, buttons, icons, profiles, app launch)
 v0.3 — Context Awareness (work, gaming, coding, battery profiles)
@@ -62,5 +63,6 @@ v1.0 — Production Stable
 | Spike | Version | Status |
 |-------|---------|--------|
 | [ep-001](./ep-001-discovery-pairing/) | v0.1 — Discovery & Transport | ✅ Certified |
-| [ep-002](./ep-002-pairing/) | v0.1 — Pairing & Trust | 🔜 Planned |
-| EP-003 | v0.1 — Command Execution | 📋 Future |
+| [ep-002](./ep-002-pairing/) | v0.1 — Pairing & Trust | ✅ Certified |
+| EP-002.5 | v0.1 — Desktop Packaging | ✅ Done (embedded in ep-001 code) |
+| [ep-003](./ep-003-remote-actions/) | v0.1 — Remote Actions | ✅ Certified |
