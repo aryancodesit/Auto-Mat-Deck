@@ -18,6 +18,7 @@ local.properties
 apps/desktop/build/
 apps/desktop/target/
 apps/desktop/bin/
+spikes/ep-001-discovery-pairing/desktop/target/
 
 # Protocol / shared
 packages/*/node_modules/

@@ -1,0 +1,29 @@
+[package]
+name = "amd-desktop"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+mdns-sd = "0.14"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+hostname = "0.4"
+tray-icon = "0.19"
+egui = "0.33"
+eframe = "0.33"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_System_Shutdown",
+    "Win32_Security",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+] }
+winrt-notification = "0.5.1"
