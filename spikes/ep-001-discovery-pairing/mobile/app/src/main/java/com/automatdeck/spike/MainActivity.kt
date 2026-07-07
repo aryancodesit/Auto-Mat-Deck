@@ -2,6 +2,7 @@ package com.automatdeck.spike
 
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
@@ -21,6 +22,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
+    companion object { private const val TAG = "AMD" }
 
     private lateinit var btnScan: Button
     private lateinit var btnPair: Button
@@ -110,8 +112,8 @@ class MainActivity : AppCompatActivity() {
         responseText.text = "Identifying..."
         btnPair.visibility = View.GONE
 
-        // Save for auto-reconnect on success
         val wsUrl = "ws://${device.host}:${device.port}"
+        Log.i(TAG, "Connecting to $wsUrl (device=${device.name})")
         val request = Request.Builder().url(wsUrl).build()
 
         currentWebSocket?.close(1000, "New connection")
@@ -119,19 +121,24 @@ class MainActivity : AppCompatActivity() {
             private var paired = false
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.i(TAG, "WebSocket connected to ${device.name}, sending identify")
                 val identify = JSONObject().apply {
                     put("type", "identify")
                     put("device_id", deviceId)
                     put("device_name", "Android-${Build.MODEL}")
                 }
                 webSocket.send(identify.toString())
+                Log.i(TAG, "Identify sent to ${device.name}")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 try {
                     val json = JSONObject(text)
-                    when (json.optString("type")) {
+                    val msgType = json.optString("type")
+                    Log.i(TAG, "Received message type=$msgType from ${device.name}")
+                    when (msgType) {
                         "trusted" -> {
+                            Log.i(TAG, "Trusted by ${device.name} — already paired")
                             paired = true
                             saveTrustedDevice(device)
                             statusText.post {
@@ -142,6 +149,7 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         "untrusted" -> {
+                            Log.i(TAG, "Untrusted by ${device.name} — awaiting pair_request")
                             statusText.post {
                                 statusText.text = "Not paired with ${device.name}"
                                 responseText.text = "Tap Pair to continue"
@@ -150,6 +158,7 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         "pair_accepted" -> {
+                            Log.i(TAG, "Pair ACCEPTED by ${device.name}")
                             paired = true
                             saveTrustedDevice(device)
                             statusText.post {
@@ -161,6 +170,7 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         "pair_rejected" -> {
+                            Log.w(TAG, "Pair REJECTED by ${device.name}: ${json.optString("reason")}")
                             statusText.post {
                                 statusText.text = "Pairing rejected by ${device.name}"
                                 responseText.text = "Rejected: ${json.optString("reason")}"
@@ -177,32 +187,39 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         "error" -> {
+                            Log.w(TAG, "Error from ${device.name}: ${json.optString("message")}")
                             statusText.post {
                                 responseText.text = "Error: ${json.optString("message")}"
                             }
                         }
 
                         else -> {
+                            Log.w(TAG, "Unknown message type=$msgType from ${device.name}: $text")
                             statusText.post { responseText.text = text }
                         }
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to parse message from ${device.name}", e)
                     statusText.post { responseText.text = text }
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                val detail = "${t::class.simpleName}: ${t.message}"
+                Log.e(TAG, "Connection FAILED for ${device.name}: $detail", t)
                 statusText.post {
-                    statusText.text = "Connection failed: ${t.message}"
+                    statusText.text = "Connection failed: $detail"
                     responseText.text = "FAILED"
                 }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                Log.i(TAG, "Connection closing for ${device.name}: ($code) $reason")
                 statusText.post { statusText.text = "Connection closing: $reason" }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.i(TAG, "Connection closed for ${device.name}: ($code) $reason")
                 statusText.post { statusText.text = "Connection closed: $reason" }
             }
         })
@@ -210,6 +227,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendPairRequest() {
         currentWebSocket?.let { ws ->
+            Log.i(TAG, "Sending pair_request (device_id=$deviceId)")
             statusText.text = "Requesting pairing..."
             responseText.text = "Waiting for desktop approval..."
             val pairReq = JSONObject().apply {
@@ -217,7 +235,8 @@ class MainActivity : AppCompatActivity() {
                 put("device_id", deviceId)
                 put("device_name", "Android-${Build.MODEL}")
             }
-            ws.send(pairReq.toString())
+            val sent = ws.send(pairReq.toString())
+            Log.i(TAG, "pair_request sent, result=$sent")
         }
     }
 
@@ -226,6 +245,7 @@ class MainActivity : AppCompatActivity() {
             put("type", "ping")
             put("timestamp", System.currentTimeMillis())
         }
+        Log.i(TAG, "Sending ping")
         webSocket.send(ping.toString())
     }
 

@@ -235,14 +235,18 @@ pub fn run_message_pump(
             } else if event.id == "approve" {
                 let pair = pair_state.lock().unwrap().take();
                 if let Some(p) = pair {
-                    info!("Pairing approved via tray: {} ({})", p.device_name, p.device_id);
+                    info!("[PAIR] User approved via tray: {} ({})", p.device_name, p.device_id);
                     let _ = p.responder.send(true);
+                } else {
+                    info!("[PAIR] Approve clicked but no pending pair request");
                 }
             } else if event.id == "reject" {
                 let pair = pair_state.lock().unwrap().take();
                 if let Some(p) = pair {
-                    info!("Pairing rejected via tray: {} ({})", p.device_name, p.device_id);
+                    info!("[PAIR] User rejected via tray: {} ({})", p.device_name, p.device_id);
                     let _ = p.responder.send(false);
+                } else {
+                    info!("[PAIR] Reject clicked but no pending pair request");
                 }
             }
         }

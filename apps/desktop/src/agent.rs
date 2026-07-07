@@ -6,7 +6,7 @@ use crate::actions::ActionRegistry;
 use crate::device_store;
 
 use futures_util::{SinkExt, StreamExt};
-use log::{info, warn};
+use log::{error, info, warn};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
@@ -34,6 +34,19 @@ pub async fn run_server(
         .unwrap_or_else(|_| "unknown".to_string());
     let device_id = format!("amd-{}", &hostname);
 
+    // Bind WebSocket BEFORE starting mDNS — don't advertise a port we aren't listening on.
+    let addr: SocketAddr = ([0, 0, 0, 0], PORT).into();
+    info!("Binding WebSocket server to {}...", addr);
+    let listener = match TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!("FATAL: Failed to bind WebSocket server on {}: {}", addr, e);
+            return;
+        }
+    };
+    info!("WebSocket server listening on ws://{}", addr);
+
+    // Now that the server is confirmed ready, start advertising.
     let mut advertisers: Vec<Box<dyn crate::discovery::AdvertisementProvider>> = Vec::new();
     advertisers.push(Box::new(crate::discovery::MdnsAnnouncer::new(
         device_id.clone(),
@@ -57,27 +70,20 @@ pub async fn run_server(
     }
 
     info!(
-        "Desktop agent started. Hostname: {}, Device ID: {}, Listening on port {}",
+        "Desktop agent ready. Hostname: {}, Device ID: {}, Port: {}",
         hostname, device_id, PORT
     );
-
-    let addr: SocketAddr = ([0, 0, 0, 0], PORT).into();
-    let listener = TcpListener::bind(&addr)
-        .await
-        .expect("Failed to bind WebSocket server");
-
-    info!("WebSocket server listening on ws://{}", addr);
 
     loop {
         tokio::select! {
             result = listener.accept() => {
                 match result {
                     Ok((stream, peer)) => {
-                        info!("New connection from {}", peer);
+                        info!("[CONNECT] Incoming TCP connection from {}", peer);
                         tokio::spawn(handle_connection(stream, peer, pair_state.clone()));
                     }
                     Err(e) => {
-                        warn!("Accept error: {}", e);
+                        error!("[CONNECT] Accept error: {}", e);
                         break;
                     }
                 }
@@ -98,9 +104,12 @@ async fn handle_connection(
     pair_state: PairState,
 ) {
     let ws_stream = match accept_async(stream).await {
-        Ok(ws) => ws,
+        Ok(ws) => {
+            info!("[WS] WebSocket upgrade successful from {}", peer);
+            ws
+        }
         Err(e) => {
-            warn!("WebSocket handshake failed from {}: {}", peer, e);
+            warn!("[WS] WebSocket handshake failed from {}: {}", peer, e);
             return;
         }
     };
@@ -135,11 +144,11 @@ async fn handle_connection(
                             if device_store::is_trusted(&id) {
                                 trusted = true;
                                 device_store::touch_device(&id);
-                                info!("Trusted device connected: {} ({})", name, id);
+                                info!("[PAIR] Trusted device reconnected: {} ({}) from {}", name, id, peer);
                                 let resp = json!({"type": "trusted", "device_id": id});
                                 let _ = write.send(Message::Text(resp.to_string().into())).await;
                             } else {
-                                info!("Unknown device connected: {} ({})", name, id);
+                                info!("[PAIR] Unknown device identified: {} ({}) from {}", name, id, peer);
                                 let resp = json!({
                                     "type": "untrusted",
                                     "message": "Device not paired. Send pair_request to initiate pairing."
@@ -150,6 +159,7 @@ async fn handle_connection(
 
                         "pair_request" => {
                             if trusted {
+                                info!("[PAIR] pair_request from already-trusted device, ignoring");
                                 let resp = json!({"type": "error", "message": "Already paired"});
                                 let _ = write.send(Message::Text(resp.to_string().into())).await;
                                 continue;
@@ -158,6 +168,7 @@ async fn handle_connection(
                             let id = match device_id {
                                 Some(ref id) => id.clone(),
                                 None => {
+                                    info!("[PAIR] pair_request without prior identify from {}", peer);
                                     let resp = json!({"type": "error", "message": "Must identify first"});
                                     let _ = write.send(Message::Text(resp.to_string().into())).await;
                                     continue;
@@ -180,7 +191,7 @@ async fn handle_connection(
                                     responder: resp_tx,
                                 });
                             }
-                            info!("Pair request from {} ({}), awaiting approval", device_name, id);
+                            info!("[PAIR] Pair request from {} ({}) from {}, awaiting tray/desktop approval", device_name, id, peer);
 
                             let approved = match tokio::time::timeout(
                                 Duration::from_secs(PAIR_TIMEOUT_SECS),
@@ -200,17 +211,21 @@ async fn handle_connection(
                             if approved {
                                 device_store::add_device(&id, &device_name);
                                 trusted = true;
-                                info!("Paired with device: {} ({})", device_name, id);
+                                info!("[PAIR] Pair ACCEPTED for {} ({})", device_name, id);
                                 let resp = json!({"type": "pair_accepted", "device_id": id});
-                                let _ = write.send(Message::Text(resp.to_string().into())).await;
+                                if let Err(e) = write.send(Message::Text(resp.to_string().into())).await {
+                                    error!("[PAIR] Failed to send pair_accepted to {}: {}", peer, e);
+                                }
                             } else {
-                                info!("Pairing rejected for: {} ({})", device_name, id);
+                                info!("[PAIR] Pair REJECTED for {} ({})", device_name, id);
                                 let resp = json!({
                                     "type": "pair_rejected",
                                     "device_id": id,
                                     "reason": "User declined or timeout"
                                 });
-                                let _ = write.send(Message::Text(resp.to_string().into())).await;
+                                if let Err(e) = write.send(Message::Text(resp.to_string().into())).await {
+                                    error!("[PAIR] Failed to send pair_rejected to {}: {}", peer, e);
+                                }
                             }
                         }
 
