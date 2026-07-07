@@ -49,7 +49,9 @@ v0.1 — Core Communication          ✅ Certified
         ↓
   Release v0.1 — All foundations complete
 
-v0.2 — Mobile Command Deck (pages, buttons, icons, profiles, app launch)
+v0.2 — Native Execution + Mobile Command Deck
+├── TD-001  Native Execution Layer    📋 Planned (remove cmd/powershell from action path)
+└── EP-004  Mobile Command Deck (pages, buttons, icons, profiles, app launch)
 v0.3 — Context Awareness (work, gaming, coding, battery profiles)
 v0.4 — Automation (triggers, macros, pipelines)
 v0.5 — Plugin Ecosystem
@@ -66,3 +68,4 @@ v1.0 — Production Stable
 | [ep-002](./ep-002-pairing/) | v0.1 — Pairing & Trust | ✅ Certified |
 | EP-002.5 | v0.1 — Desktop Packaging | ✅ Done (embedded in ep-001 code) |
 | [ep-003](./ep-003-remote-actions/) | v0.1 — Remote Actions | ✅ Certified |
+| [td-001](./td-001-native-execution-layer/) | v0.2 — Native Execution Layer | 📋 Planned |
