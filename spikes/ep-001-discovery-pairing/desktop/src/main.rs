@@ -1,10 +1,3 @@
-// EP-002.5: Desktop Packaging
-// - System tray with menu (Status, Open Logs, Exit)
-// - File logging to %APPDATA%/AutoMatDeck/agent.log
-// - Windows subsystem (no console window in release)
-// - CLI: --install (auto-start), --uninstall (remove auto-start)
-// - Single-instance via named mutex
-
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
