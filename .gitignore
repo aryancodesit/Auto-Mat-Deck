@@ -48,8 +48,10 @@ Thumbs.db
 .vscode/
 *.iml
 
+# Build artifacts (repo root)
+/AutoMatDeck.exe
+
 # Local documentation (not published)
-docs/
 AI_CONTEXT.md
 
 # Logs
