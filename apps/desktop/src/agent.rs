@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::actions::ActionRegistry;
 use crate::pairing::{SharedPairingManager, ValidationResult, validation_reason_code};
 use crate::repository::DocumentStore;
-use crate::state::SharedState;
+use crate::state::SharedRuntime;
 
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
@@ -31,7 +31,7 @@ pub async fn run_server(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     pair_state: PairState,
     pairing_manager: SharedPairingManager,
-    shared_state: SharedState,
+    shared: SharedRuntime,
     store: Arc<dyn DocumentStore>,
 ) {
     let hostname = hostname::get()
@@ -80,11 +80,11 @@ pub async fn run_server(
             result = listener.accept() => {
                 match result {
                     Ok((stream, peer)) => {
-                        info!("[CONNECT] Incoming TCP connection from {}", peer);
-                        let ss = shared_state.clone();
-                        let st = store.clone();
-                        let pm = pairing_manager.clone();
-                        tokio::spawn(handle_connection(stream, peer, pair_state.clone(), pm, ss, st));
+                            info!("[CONNECT] Incoming TCP connection from {}", peer);
+                            let ss = shared.clone();
+                            let st = store.clone();
+                            let pm = pairing_manager.clone();
+                            tokio::spawn(handle_connection(stream, peer, pair_state.clone(), pm, ss, st));
                     }
                     Err(e) => {
                         error!("[CONNECT] Accept error: {}", e);
@@ -102,20 +102,25 @@ pub async fn run_server(
     }
 }
 
-fn is_trusted(state: &SharedState, device_id: &str) -> bool {
-    state.lock().unwrap().is_trusted(device_id)
+fn is_trusted(shared: &SharedRuntime, device_id: &str) -> bool {
+    shared.lock().unwrap().app.is_trusted(device_id)
 }
 
-fn touch_device(state: &SharedState, store: &dyn DocumentStore, device_id: &str) {
-    let mut app = state.lock().unwrap();
-    app.touch_device(device_id);
-    app.persist(store);
+fn touch_device(shared: &SharedRuntime, store: &dyn DocumentStore, device_id: &str) {
+    let mut rt = shared.lock().unwrap();
+    rt.app.touch_device(device_id);
+    rt.app.persist(store);
 }
 
-fn add_device(state: &SharedState, store: &dyn DocumentStore, device_id: &str, device_name: &str) {
-    let mut app = state.lock().unwrap();
-    app.add_device(device_id, device_name);
-    app.persist(store);
+fn add_device(
+    shared: &SharedRuntime,
+    store: &dyn DocumentStore,
+    device_id: &str,
+    device_name: &str,
+) {
+    let mut rt = shared.lock().unwrap();
+    rt.app.add_device(device_id, device_name);
+    rt.app.persist(store);
 }
 
 async fn handle_connection(
@@ -123,7 +128,7 @@ async fn handle_connection(
     peer: SocketAddr,
     pair_state: PairState,
     pairing_manager: SharedPairingManager,
-    shared_state: SharedState,
+    shared: SharedRuntime,
     store: Arc<dyn DocumentStore>,
 ) {
     let ws_stream = match accept_async(stream).await {
@@ -164,9 +169,9 @@ async fn handle_connection(
                                 .to_string();
                             device_id = Some(id.clone());
 
-                            if is_trusted(&shared_state, &id) {
+                            if is_trusted(&shared, &id) {
                                 trusted = true;
-                                touch_device(&shared_state, &*store, &id);
+                                touch_device(&shared, &*store, &id);
                                 info!(
                                     "[PAIR] Trusted device reconnected: {} ({}) from {}",
                                     name, id, peer
@@ -223,7 +228,7 @@ async fn handle_connection(
                                 let reason_code = validation_reason_code(&result);
                                 match result {
                                     ValidationResult::Accepted => {
-                                        add_device(&shared_state, &*store, &id, &device_name);
+                                        add_device(&shared, &*store, &id, &device_name);
                                         trusted = true;
                                         info!(
                                             "[PAIR] OTP pair ACCEPTED for {} ({})",
@@ -289,7 +294,7 @@ async fn handle_connection(
                             }
 
                             if approved {
-                                add_device(&shared_state, &*store, &id, &device_name);
+                                add_device(&shared, &*store, &id, &device_name);
                                 trusted = true;
                                 info!("[PAIR] Tray ACCEPTED for {} ({})", device_name, id);
                                 let resp = json!({"type": "pair_accepted", "device_id": id});

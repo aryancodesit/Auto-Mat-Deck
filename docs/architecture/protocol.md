@@ -26,6 +26,7 @@ The protocol is currently **implemented ad-hoc in the desktop codebase**
 | `action_result` | Desktop | Mobile | Result of action execution |
 | `ping` | Mobile | Desktop | Keepalive probe |
 | `pong` | Desktop | Mobile | Keepalive response |
+| `active_profile_state` | Desktop | Mobile | Active runtime Profile projection (v0.3) |
 | `error` | Desktop | Mobile | Error response to invalid messages |
 
 ## Implementation status
@@ -43,6 +44,7 @@ The protocol is currently **implemented ad-hoc in the desktop codebase**
 | `ping` | ✅ Implemented |
 | `pong` | ✅ Implemented |
 | `error` | ✅ Implemented |
+| `active_profile_state` | ❌ v0.3 — not yet implemented |
 | `pair_challenge` | ❌ Not used | ADR-002 was implemented without new messages — OTP is an optional `pairing_code` field on `pair_request`. |
 | `pair_verify` | ❌ Not used | Same as above. |
 
@@ -181,7 +183,74 @@ the wire format is frozen at v1.
 { "type": "error", "message": "Device not paired. Complete pairing first." }
 ```
 
-## Sequence (v0.2 pairing flow)
+### `active_profile_state`
+
+- **Sender:** Desktop
+- **Receiver:** Mobile
+- **Purpose:** Projects the active runtime Profile definition to connected
+  clients. Sent after authorization (`trusted` or `pair_accepted`) and on
+  every subsequent state change (Profile switch, SelectionMode change).
+  Idempotent — the full state is sent each time.
+- **Direction:** Desktop-initiated (push). Only sent to trusted clients.
+- **v0.3:** Not yet implemented.
+
+#### Payload contract
+
+| Field | Type | Nullable | Description |
+|---|---|---|---|
+| `type` | string | no | Always `"active_profile_state"` |
+| `selection_mode` | string | no | `"automatic"` or `"manual"` |
+| `profile` | object | yes | Complete active Profile definition or `null` |
+| `profile.id` | string | no | ProfileId as string |
+| `profile.name` | string | no | Display name |
+| `profile.pages` | array | no | Array of Page objects (may be empty) |
+| `pages[].id` | string | no | PageId as string |
+| `pages[].name` | string | no | Display name |
+| `pages[].buttons` | array | no | Array of Button objects (may be empty) |
+| `buttons[].id` | string | no | ButtonId as string |
+| `buttons[].label` | string | no | Display label |
+| `buttons[].action` | object | no | Action reference |
+| `action.action_name` | string | no | Registered action name |
+| `action.payload` | object | no | Action-specific arguments |
+
+```json
+{
+  "type": "active_profile_state",
+  "selection_mode": "automatic",
+  "profile": {
+    "id": "abc123...",
+    "name": "Development",
+    "pages": [
+      {
+        "id": "def456...",
+        "name": "Main",
+        "buttons": [
+          {
+            "id": "ghi789...",
+            "label": "Open Chrome",
+            "action": {
+              "action_name": "launch",
+              "payload": { "app": "chrome" }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Null profile (no active Profile):
+
+```json
+{
+  "type": "active_profile_state",
+  "selection_mode": "automatic",
+  "profile": null
+}
+```
+
+## Sequence (v0.3 pairing + profile projection flow)
 
 ```mermaid
 sequenceDiagram
@@ -196,18 +265,26 @@ sequenceDiagram
 
     alt Device already paired
         D-->>M: trusted
+        D-->>M: active_profile_state
     else Device not paired
         D-->>M: untrusted
         M->>D: pair_request (device_name, pairing_code)
         alt Code valid & session active
             D-->>M: pair_accepted
             Note over D: Device persisted as trusted
+            D-->>M: active_profile_state
         else Code expired / invalid / session cancelled
             D-->>M: pair_rejected (reason)
         end
     end
 
     Note over M,D: Subsequent sessions skip pairing
+
+    Note over D: Foreground process changes
+    D-->>M: active_profile_state
+
+    Note over D: User toggles manual/automatic mode
+    D-->>M: active_profile_state
 
     M->>D: action (action, request_id)
     D-->>M: action_result (success, data)

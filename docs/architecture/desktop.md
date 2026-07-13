@@ -8,13 +8,26 @@ pairings, executes actions, and verifies OTP codes.
 
 ## Threading model
 
-Three concurrent execution contexts:
+Four concurrent execution contexts (v0.3 adds foreground observer):
 
 | Thread / Runtime | Role |
 |------------------|------|
 | **Main thread** (eframe) | GUI, tray icon, user interaction |
 | **Tray pump** | Windows message loop for system-tray events |
 | **Tokio runtime** | WebSocket server, mDNS advertisement, OTP verification |
+| **Foreground observer** (v0.3) | Polls `GetForegroundWindow`, applies stabilization, pushes `ContextSnapshot` |
+
+Shared state: `Arc<Mutex<DesktopRuntime>>` (v0.3 replaces `Arc<Mutex<AppState>>`)
+
+```rust
+pub struct DesktopRuntime {
+    pub app: AppState,        // Document + GUI flags
+    pub runtime: ProfileRuntime,  // active Profile, SelectionMode, ContextSnapshot
+}
+```
+
+`DesktopRuntime` must contain exactly these two fields. A third field requires
+explicit architecture review.
 
 The threads communicate via `tokio::sync` primitives (channels, `Arc<Mutex<>>`).
 

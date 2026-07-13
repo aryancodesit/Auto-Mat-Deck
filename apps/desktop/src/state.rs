@@ -132,9 +132,34 @@ impl AppState {
     }
 }
 
-/// Shared state wrapper used across threads.
-pub type SharedState = Arc<Mutex<AppState>>;
+/// Desktop runtime: wraps persisted AppState and transient ProfileRuntime.
+///
+/// Exactly two fields. A third field requires explicit architecture review.
+pub struct DesktopRuntime {
+    pub app: AppState,
+    pub runtime: ProfileRuntime,
+}
 
-pub fn new_shared(store: &dyn DocumentStore) -> SharedState {
-    Arc::new(Mutex::new(AppState::load(store)))
+impl DesktopRuntime {
+    /// Apply a domain command, reconcile runtime, return success/failure.
+    /// Caller is responsible for persistence after this.
+    pub fn dispatch_document(&mut self, cmd: &Command) -> Result<(), CommandError> {
+        self.app.dispatch(cmd)?;
+        self.runtime.reconcile(&self.app.document);
+        Ok(())
+    }
+
+    pub fn new(store: &dyn DocumentStore) -> Self {
+        Self {
+            app: AppState::load(store),
+            runtime: ProfileRuntime::default(),
+        }
+    }
+}
+
+/// Shared runtime wrapper used across threads.
+pub type SharedRuntime = Arc<Mutex<DesktopRuntime>>;
+
+pub fn new_shared(store: &dyn DocumentStore) -> SharedRuntime {
+    Arc::new(Mutex::new(DesktopRuntime::new(store)))
 }

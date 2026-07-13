@@ -7,10 +7,10 @@ use crate::command::{Command, CommandError};
 use crate::editor::EditorUi;
 use crate::pairing::SharedPairingManager;
 use crate::repository::DocumentStore;
-use crate::state::{AppState, SharedState, Tab};
+use crate::state::{SharedRuntime, Tab};
 
 pub struct DesktopApp {
-    pub state: SharedState,
+    pub state: SharedRuntime,
     pairing_manager: SharedPairingManager,
     store: Arc<dyn DocumentStore>,
     theme: Theme,
@@ -33,7 +33,7 @@ impl Default for Theme {
 
 impl DesktopApp {
     pub fn new(
-        state: SharedState,
+        state: SharedRuntime,
         pairing_manager: SharedPairingManager,
         store: Arc<dyn DocumentStore>,
     ) -> Self {
@@ -48,16 +48,12 @@ impl DesktopApp {
         }
     }
 
-    fn persist(&self, state: &AppState) {
-        state.persist(&*self.store);
-    }
-
     /// Single orchestration path for editor mutations.
-    /// Locks state, dispatches, persists on success, returns error.
+    /// Locks DesktopRuntime, dispatches document mutation, persists on success.
     fn dispatch_editor(&self, cmd: &Command) -> Result<(), CommandError> {
-        let mut state = self.state.lock().unwrap();
-        state.dispatch(cmd)?;
-        self.persist(&state);
+        let mut rt = self.state.lock().unwrap();
+        rt.dispatch_document(cmd)?;
+        rt.app.persist(&*self.store);
         Ok(())
     }
 }
@@ -78,7 +74,7 @@ impl eframe::App for DesktopApp {
                 ui.horizontal(|ui| {
                     ui.heading("AutoMatDeck Desktop Studio");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let running = self.state.lock().unwrap().server_running;
+                        let running = self.state.lock().unwrap().app.server_running;
                         let label = if running {
                             "● Running"
                         } else {
@@ -103,7 +99,7 @@ impl eframe::App for DesktopApp {
                 ui.horizontal(|ui| {
                     ui.label(format!("v{}", env!("CARGO_PKG_VERSION")));
                     ui.separator();
-                    let device_count = self.state.lock().unwrap().device_count();
+                    let device_count = self.state.lock().unwrap().app.device_count();
                     ui.label(format!("{} trusted devices", device_count));
                 });
             });
@@ -119,22 +115,22 @@ impl eframe::App for DesktopApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(12.0);
                 });
-                let mut state = self.state.lock().unwrap();
-                ui.selectable_value(&mut state.selected_tab, Tab::Dashboard, "📊  Dashboard");
-                ui.selectable_value(&mut state.selected_tab, Tab::Editor, "🖊  Editor");
-                ui.selectable_value(&mut state.selected_tab, Tab::Devices, "📱  Devices");
-                ui.selectable_value(&mut state.selected_tab, Tab::Pairing, "🔗  Pairing");
-                ui.selectable_value(&mut state.selected_tab, Tab::Settings, "⚙  Settings");
-                ui.selectable_value(&mut state.selected_tab, Tab::About, "ℹ  About");
-                drop(state);
+                let mut rt = self.state.lock().unwrap();
+                ui.selectable_value(&mut rt.app.selected_tab, Tab::Dashboard, "📊  Dashboard");
+                ui.selectable_value(&mut rt.app.selected_tab, Tab::Editor, "🖊  Editor");
+                ui.selectable_value(&mut rt.app.selected_tab, Tab::Devices, "📱  Devices");
+                ui.selectable_value(&mut rt.app.selected_tab, Tab::Pairing, "🔗  Pairing");
+                ui.selectable_value(&mut rt.app.selected_tab, Tab::Settings, "⚙  Settings");
+                ui.selectable_value(&mut rt.app.selected_tab, Tab::About, "ℹ  About");
+                drop(rt);
             });
 
         let active_tab;
         let server_running;
         {
-            let gs = self.state.lock().unwrap();
-            active_tab = gs.selected_tab.clone();
-            server_running = gs.server_running;
+            let rt = self.state.lock().unwrap();
+            active_tab = rt.app.selected_tab.clone();
+            server_running = rt.app.server_running;
         }
         egui::CentralPanel::default().show(ctx, |ui| match active_tab {
             Tab::Dashboard => self.show_dashboard(ui, server_running),
@@ -150,8 +146,8 @@ impl eframe::App for DesktopApp {
 impl DesktopApp {
     fn show_editor(&mut self, ui: &mut egui::Ui) {
         let doc = {
-            let state = self.state.lock().unwrap();
-            state.document.clone()
+            let rt = self.state.lock().unwrap();
+            rt.app.document.clone()
         };
 
         let cmd = self.editor.show(ui, &doc);
@@ -195,8 +191,8 @@ impl DesktopApp {
         ui.separator();
 
         let devices = {
-            let state = self.state.lock().unwrap();
-            state.devices().to_vec()
+            let rt = self.state.lock().unwrap();
+            rt.app.devices().to_vec()
         };
 
         if devices.is_empty() {
@@ -212,9 +208,9 @@ impl DesktopApp {
                         ui.strong(&device.device_name);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Forget").clicked() {
-                                let mut state = self.state.lock().unwrap();
-                                state.forget_device(device.device_id.as_str());
-                                self.persist(&state);
+                                let mut rt = self.state.lock().unwrap();
+                                rt.app.forget_device(device.device_id.as_str());
+                                rt.app.persist(&*self.store);
                                 info!(
                                     "Forgot device: {} ({})",
                                     device.device_name, device.device_id

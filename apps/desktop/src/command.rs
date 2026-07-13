@@ -58,6 +58,15 @@ pub enum Command {
         button_id: ButtonId,
         to_page: PageId,
     },
+    // Context rules
+    AddContextRule {
+        context_rule_id: ContextRuleId,
+        process_name: String,
+        profile_id: ProfileId,
+    },
+    RemoveContextRule {
+        context_rule_id: ContextRuleId,
+    },
 }
 
 /// Reason a command could not be applied.
@@ -70,6 +79,9 @@ pub enum CommandError {
     CannotDeleteLastProfile,
     CannotDeleteLastPage,
     DuplicateButtonId,
+    ContextRuleNotFound,
+    EmptyProcessName,
+    DuplicateContextRuleProcess,
 }
 
 /// Reducer: returns a new `Document` or a `CommandError`.
@@ -110,6 +122,7 @@ pub fn apply(doc: &Document, cmd: &Command) -> Result<Document, CommandError> {
                 Some(_) if out.profiles.len() <= 1 => Err(CommandError::CannotDeleteLastProfile),
                 Some(_) => {
                     out.profiles.retain(|p| p.id != *profile_id);
+                    out.context_rules.retain(|r| r.profile_id != *profile_id);
                     Ok(out)
                 }
             }
@@ -297,6 +310,40 @@ pub fn apply(doc: &Document, cmd: &Command) -> Result<Document, CommandError> {
                 }
                 None => Err(CommandError::ProfileNotFound),
             }
+        }
+        Command::AddContextRule {
+            context_rule_id,
+            process_name,
+            profile_id,
+        } => {
+            let normalized = normalize_process_name(process_name);
+            if normalized.is_empty() {
+                return Err(CommandError::EmptyProcessName);
+            }
+            if out
+                .context_rules
+                .iter()
+                .any(|r| r.process_name == normalized)
+            {
+                return Err(CommandError::DuplicateContextRuleProcess);
+            }
+            if !out.profiles.iter().any(|p| p.id == *profile_id) {
+                return Err(CommandError::ProfileNotFound);
+            }
+            out.context_rules.push(ContextRule {
+                id: context_rule_id.clone(),
+                process_name: normalized,
+                profile_id: profile_id.clone(),
+            });
+            Ok(out)
+        }
+        Command::RemoveContextRule { context_rule_id } => {
+            let before = out.context_rules.len();
+            out.context_rules.retain(|r| r.id != *context_rule_id);
+            if out.context_rules.len() == before {
+                return Err(CommandError::ContextRuleNotFound);
+            }
+            Ok(out)
         }
     }
 }
@@ -741,5 +788,224 @@ mod tests {
             },
         );
         assert_eq!(result, Err(CommandError::DuplicateButtonId));
+    }
+
+    // ── Context Rule commands ──
+
+    #[test]
+    fn add_context_rule_success() {
+        let doc = fixture();
+        let pid = doc.profiles[0].id.clone();
+        let result = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r1"),
+                process_name: "  Code.exe  ".into(),
+                profile_id: pid.clone(),
+            },
+        );
+        assert!(result.is_ok());
+        let out = result.unwrap();
+        assert_eq!(out.context_rules.len(), 1);
+        assert_eq!(out.context_rules[0].process_name, "code.exe");
+        assert_eq!(out.context_rules[0].profile_id, pid);
+    }
+
+    #[test]
+    fn add_context_rule_empty_process_name() {
+        let doc = fixture();
+        let pid = doc.profiles[0].id.clone();
+        let result = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r1"),
+                process_name: "  ".into(),
+                profile_id: pid,
+            },
+        );
+        assert_eq!(result, Err(CommandError::EmptyProcessName));
+    }
+
+    #[test]
+    fn add_context_rule_duplicate_normalized() {
+        let doc = fixture();
+        let pid = doc.profiles[0].id.clone();
+        let doc = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r1"),
+                process_name: "code.exe".into(),
+                profile_id: pid.clone(),
+            },
+        )
+        .unwrap();
+        let result = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r2"),
+                process_name: "CODE.exe".into(),
+                profile_id: pid,
+            },
+        );
+        assert_eq!(result, Err(CommandError::DuplicateContextRuleProcess));
+    }
+
+    #[test]
+    fn add_context_rule_missing_profile() {
+        let doc = fixture();
+        let result = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r1"),
+                process_name: "code.exe".into(),
+                profile_id: ProfileId::from_string("nope"),
+            },
+        );
+        assert_eq!(result, Err(CommandError::ProfileNotFound));
+    }
+
+    #[test]
+    fn remove_context_rule_success() {
+        let doc = fixture();
+        let pid = doc.profiles[0].id.clone();
+        let doc = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r1"),
+                process_name: "spotify.exe".into(),
+                profile_id: pid,
+            },
+        )
+        .unwrap();
+        let result = apply(
+            &doc,
+            &Command::RemoveContextRule {
+                context_rule_id: ContextRuleId::from_string("r1"),
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().context_rules.len(), 0);
+    }
+
+    #[test]
+    fn remove_context_rule_not_found() {
+        let doc = fixture();
+        let result = apply(
+            &doc,
+            &Command::RemoveContextRule {
+                context_rule_id: ContextRuleId::from_string("nope"),
+            },
+        );
+        assert_eq!(result, Err(CommandError::ContextRuleNotFound));
+    }
+
+    #[test]
+    fn delete_profile_cascades_context_rules() {
+        let doc = fixture();
+        // Add a second profile
+        let doc = apply(
+            &doc,
+            &Command::CreateProfile {
+                profile_id: ProfileId::from_string("second"),
+                initial_page_id: PageId::from_string("second-page"),
+                name: "Second".into(),
+            },
+        )
+        .unwrap();
+        // Add a context rule for the first profile
+        let pid = doc.profiles[0].id.clone();
+        let doc = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r1"),
+                process_name: "code.exe".into(),
+                profile_id: pid.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.context_rules.len(), 1);
+        // Delete the first profile
+        let result = apply(&doc, &Command::DeleteProfile { profile_id: pid });
+        assert!(result.is_ok());
+        let out = result.unwrap();
+        assert_eq!(out.profiles.len(), 1);
+        assert_eq!(out.context_rules.len(), 0);
+    }
+
+    #[test]
+    fn delete_profile_preserves_unrelated_context_rules() {
+        let doc = fixture();
+        let pid_a = doc.profiles[0].id.clone();
+        // Add Profile B
+        let doc = apply(
+            &doc,
+            &Command::CreateProfile {
+                profile_id: ProfileId::from_string("profile-b"),
+                initial_page_id: PageId::from_string("page-b"),
+                name: "Profile B".into(),
+            },
+        )
+        .unwrap();
+        // Rule A -> Profile A
+        let doc = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("rule-a"),
+                process_name: "code.exe".into(),
+                profile_id: pid_a.clone(),
+            },
+        )
+        .unwrap();
+        // Rule B -> Profile B
+        let doc = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("rule-b"),
+                process_name: "spotify.exe".into(),
+                profile_id: ProfileId::from_string("profile-b"),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.context_rules.len(), 2);
+        // Delete Profile A
+        let result = apply(&doc, &Command::DeleteProfile { profile_id: pid_a });
+        assert!(result.is_ok());
+        let out = result.unwrap();
+        assert_eq!(out.profiles.len(), 1);
+        assert_eq!(out.context_rules.len(), 1);
+        assert_eq!(
+            out.context_rules[0].id,
+            ContextRuleId::from_string("rule-b")
+        );
+        assert_eq!(
+            out.context_rules[0].profile_id,
+            ProfileId::from_string("profile-b")
+        );
+    }
+
+    #[test]
+    fn add_context_rule_whitespace_normalized_duplicate_rejected() {
+        let doc = fixture();
+        let pid = doc.profiles[0].id.clone();
+        // Add with whitespace-normalized name
+        let doc = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r1"),
+                process_name: "  code.exe  ".into(),
+                profile_id: pid.clone(),
+            },
+        )
+        .unwrap();
+        // Same normalized form should be rejected
+        let result = apply(
+            &doc,
+            &Command::AddContextRule {
+                context_rule_id: ContextRuleId::from_string("r2"),
+                process_name: "code.exe".into(),
+                profile_id: pid,
+            },
+        );
+        assert_eq!(result, Err(CommandError::DuplicateContextRuleProcess));
     }
 }

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use agent::PairState;
 use gui::DesktopApp;
 use log::info;
+use state::SharedRuntime;
 
 use crate::pairing::SharedPairingManager;
 use crate::repository::DocumentStore;
@@ -50,13 +51,13 @@ fn main() -> eframe::Result<()> {
 
     let pair_state: PairState = Arc::new(std::sync::Mutex::new(None));
     let pairing_manager: SharedPairingManager = Arc::new(pairing::PairingManager::new());
-    let app_state = state::new_shared(&*repo);
+    let shared_runtime: SharedRuntime = state::new_shared(&*repo);
 
     let (shutdown_tx, shutdown_rx_from_main) = tokio::sync::watch::channel(false);
 
     let ps_for_server = pair_state.clone();
     let pm_for_server = pairing_manager.clone();
-    let as_for_server = app_state.clone();
+    let rt_for_server = shared_runtime.clone();
     let repo_for_server = repo.clone();
     let shutdown_rx_for_server = shutdown_rx_from_main.clone();
     let server_handle = std::thread::Builder::new()
@@ -67,21 +68,21 @@ fn main() -> eframe::Result<()> {
                 shutdown_rx_for_server,
                 ps_for_server,
                 pm_for_server,
-                as_for_server,
+                rt_for_server,
                 repo_for_server,
             ));
         })
         .expect("Failed to spawn server thread");
 
     let ps_for_tray = pair_state.clone();
-    let as_for_tray = app_state.clone();
+    let rt_for_tray = shared_runtime.clone();
     let tray_handle = std::thread::Builder::new()
         .name("tray-pump".into())
         .spawn(move || {
             let menu = tray::create_menu_items();
             {
-                let mut state = as_for_tray.lock().unwrap();
-                state.server_running = true;
+                let mut rt = rt_for_tray.lock().unwrap();
+                rt.app.server_running = true;
             }
             tray::run_message_pump(shutdown_tx, ps_for_tray, menu);
         })
@@ -95,7 +96,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
-    let app = DesktopApp::new(app_state.clone(), pairing_manager.clone(), repo);
+    let app = DesktopApp::new(shared_runtime.clone(), pairing_manager.clone(), repo);
 
     info!("Desktop Studio window opened.");
 
