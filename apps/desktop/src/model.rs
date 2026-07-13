@@ -223,6 +223,20 @@ impl ProfileRuntime {
     }
 }
 
+/// Transport-neutral transition record for one observation cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTransition {
+    pub context_changed: bool,
+    pub previous_profile_id: Option<ProfileId>,
+    pub active_profile_id: Option<ProfileId>,
+}
+
+impl RuntimeTransition {
+    pub fn active_profile_changed(&self) -> bool {
+        self.previous_profile_id != self.active_profile_id
+    }
+}
+
 /// Pure function: resolve the active ProfileId given context, rules, and mode.
 /// Does NOT mutate anything.
 pub fn resolve_active_profile(
@@ -621,5 +635,47 @@ mod tests {
         assert_eq!(rt.active_profile_id, None);
         assert_eq!(rt.selection_mode, SelectionMode::Automatic);
         assert_eq!(rt.latest_context, None);
+    }
+
+    // ── RuntimeTransition ──
+
+    #[test]
+    fn transition_active_profile_unchanged() {
+        let t = RuntimeTransition {
+            context_changed: false,
+            previous_profile_id: Some(ProfileId::from_string("a")),
+            active_profile_id: Some(ProfileId::from_string("a")),
+        };
+        assert!(!t.active_profile_changed());
+    }
+
+    #[test]
+    fn transition_active_profile_changed_a_to_b() {
+        let t = RuntimeTransition {
+            context_changed: true,
+            previous_profile_id: Some(ProfileId::from_string("a")),
+            active_profile_id: Some(ProfileId::from_string("b")),
+        };
+        assert!(t.active_profile_changed());
+    }
+
+    #[test]
+    fn transition_active_profile_changed_none_to_a() {
+        let t = RuntimeTransition {
+            context_changed: true,
+            previous_profile_id: None,
+            active_profile_id: Some(ProfileId::from_string("a")),
+        };
+        assert!(t.active_profile_changed());
+    }
+
+    #[test]
+    fn transition_active_profile_changed_a_to_none() {
+        let t = RuntimeTransition {
+            context_changed: true,
+            previous_profile_id: Some(ProfileId::from_string("a")),
+            active_profile_id: None,
+        };
+        assert!(t.active_profile_changed());
     }
 }

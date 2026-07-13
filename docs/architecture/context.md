@@ -237,27 +237,24 @@ These two paths are orthogonal. The editor shows what the user is editing.
 The runtime determines what Android renders. They can be the same Profile
 by coincidence, never by coupling.
 
-## Foreground observer design
+## Foreground observer
 
-The Windows foreground observer follows this Win32 API chain:
+A dedicated Win32 polling subsystem identifies the current foreground process;
+observations are applied through `DesktopRuntime` for automatic Profile
+resolution.
 
-1. `GetForegroundWindow()` → `HWND`
-2. `GetWindowThreadProcessId(hwnd, &pid)` → `DWORD pid`
-3. `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)` → `HANDLE`
-4. `QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buffer, &size)` → path
-5. Extract basename: `"C:\Program Files\Code.exe"` → `"Code.exe"`
-6. `CloseHandle(handle)`
+The observer:
 
-Edge cases:
+- Uses `GetModuleBaseNameW` (not `QueryFullProcessImageNameW`) to obtain the
+  executable basename directly — no path parsing.
+- Returns `Result<Option<ContextSnapshot>, ContextObserverError>` to
+  distinguish "no foreground window" from "observation failed."
+- On `Err`, runtime state is **not** mutated — `latest_context` is retained.
+- Runs on a dedicated `std::thread` at 200 ms interval.
+- Deduplicates observations using `normalize_process_name` comparison.
+- Does not implement temporal debounce (deferred to post-Sprint 2 testing).
 
-| Condition | Behaviour |
-|---|---|
-| `GetForegroundWindow` returns `NULL` | No candidate, no emission |
-| PID lookup fails | Transient — no emission |
-| Process exits during query | OpenProcess fails — no emission |
-| Empty process name | No emission |
-| Lock screen / UAC / secure desktop | `GetForegroundWindow` returns a handle but query access may fail — no emission |
-| Repeated same process | Stability counter accumulates; emit after 250ms |
+For the full design, API contract, Win32 API audit, locking pseudocode,
+shutdown pattern, and test matrix, see:
 
-The observer is `#[cfg(windows)]` guarded. On non-Windows platforms,
-`poll()` always returns `None`.
+**[Context Observer Architecture](context-observer.md)**

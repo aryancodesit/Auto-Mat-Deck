@@ -7,6 +7,7 @@ mod discovery;
 mod editor;
 mod gui;
 mod model;
+mod observer;
 mod pairing;
 mod repository;
 mod state;
@@ -74,6 +75,36 @@ fn main() -> eframe::Result<()> {
         })
         .expect("Failed to spawn server thread");
 
+    #[cfg(windows)]
+    let obs_rt = shared_runtime.clone();
+    #[cfg(windows)]
+    let shutdown_rx_for_observer = shutdown_rx_from_main.clone();
+    #[cfg(windows)]
+    let observer_handle = std::thread::Builder::new()
+        .name("context-observer".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            loop {
+                let shutdown = match shutdown_rx_for_observer.has_changed() {
+                    Ok(true) => *shutdown_rx_for_observer.borrow(),
+                    Ok(false) => false,
+                    Err(_) => true,
+                };
+                if shutdown {
+                    break;
+                }
+                let observation = observer::ForegroundObserver::current_context();
+                if let Some(snapshot) = observer::successful_observation(observation) {
+                    let _transition = {
+                        let mut guard = obs_rt.lock().unwrap();
+                        guard.apply_context_observation(snapshot)
+                    };
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        })
+        .expect("Failed to spawn observer thread");
+
     let ps_for_tray = pair_state.clone();
     let rt_for_tray = shared_runtime.clone();
     let tray_handle = std::thread::Builder::new()
@@ -109,6 +140,8 @@ fn main() -> eframe::Result<()> {
     info!("GUI closed, initiating shutdown...");
     drop(shutdown_rx_from_main);
     let _ = server_handle.join();
+    #[cfg(windows)]
+    let _ = observer_handle.join();
     let _ = tray_handle.join();
     info!("Goodbye.");
 
