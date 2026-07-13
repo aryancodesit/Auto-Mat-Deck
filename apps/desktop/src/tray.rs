@@ -1,24 +1,23 @@
 use std::time::Duration;
 
-use log::{info, error};
-use tray_icon::menu::{Menu, MenuItem, CheckMenuItem, PredefinedMenuItem, MenuEvent};
-use tray_icon::{TrayIconBuilder, TrayIcon, Icon};
+use log::{error, info};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Registry::{
+    HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW,
+    RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+};
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::CreateMutexW;
 #[cfg(windows)]
-use windows_sys::Win32::System::Registry::{
-    RegOpenKeyExW, RegSetValueExW, RegDeleteValueW, RegCloseKey, RegQueryValueExW,
-    HKEY_CURRENT_USER, KEY_SET_VALUE, KEY_QUERY_VALUE, REG_SZ,
-};
-#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    PeekMessageW, TranslateMessage, DispatchMessageW, MSG, PM_REMOVE,
+    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
 };
 
-use crate::device_store;
 use crate::agent::PairState;
 
 #[cfg(windows)]
@@ -65,7 +64,11 @@ pub fn ensure_single_instance() -> Option<HANDLE> {
 pub fn install_auto_start() {
     let exe = std::env::current_exe().expect("Failed to get executable path");
     let path_str = exe.to_string_lossy().to_string();
-    let value = if path_str.contains(' ') { format!("\"{}\"", path_str) } else { path_str };
+    let value = if path_str.contains(' ') {
+        format!("\"{}\"", path_str)
+    } else {
+        path_str
+    };
 
     unsafe {
         let wide_path = to_wide(REGISTRY_PATH);
@@ -73,15 +76,25 @@ pub fn install_auto_start() {
         let wide_value = to_wide(&value);
 
         let mut hkey = std::ptr::null_mut();
-        let result = RegOpenKeyExW(HKEY_CURRENT_USER, wide_path.as_ptr(), 0, KEY_SET_VALUE, &mut hkey);
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_path.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut hkey,
+        );
         if result != 0 {
             error!("Failed to open registry key (error {})", result);
             return;
         }
 
         let result = RegSetValueExW(
-            hkey, wide_value_name.as_ptr(), 0, REG_SZ,
-            wide_value.as_ptr() as *const u8, (wide_value.len() * 2) as u32,
+            hkey,
+            wide_value_name.as_ptr(),
+            0,
+            REG_SZ,
+            wide_value.as_ptr() as *const u8,
+            (wide_value.len() * 2) as u32,
         );
         RegCloseKey(hkey);
 
@@ -100,8 +113,16 @@ pub fn uninstall_auto_start() {
         let wide_value_name = to_wide(REGISTRY_VALUE_NAME);
 
         let mut hkey = std::ptr::null_mut();
-        let result = RegOpenKeyExW(HKEY_CURRENT_USER, wide_path.as_ptr(), 0, KEY_SET_VALUE, &mut hkey);
-        if result != 0 { return; }
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_path.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut hkey,
+        );
+        if result != 0 {
+            return;
+        }
 
         let result = RegDeleteValueW(hkey, wide_value_name.as_ptr());
         RegCloseKey(hkey);
@@ -118,15 +139,27 @@ pub fn is_auto_start_enabled() -> bool {
         let wide_value_name = to_wide(REGISTRY_VALUE_NAME);
 
         let mut hkey = std::ptr::null_mut();
-        let result = RegOpenKeyExW(HKEY_CURRENT_USER, wide_path.as_ptr(), 0, KEY_QUERY_VALUE, &mut hkey);
-        if result != 0 { return false; }
+        let result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_path.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut hkey,
+        );
+        if result != 0 {
+            return false;
+        }
 
         let mut value_type: u32 = 0;
         let mut buffer = [0u16; 512];
         let mut size = (buffer.len() * 2) as u32;
         let result = RegQueryValueExW(
-            hkey, wide_value_name.as_ptr(), std::ptr::null(),
-            &mut value_type, buffer.as_mut_ptr() as *mut u8, &mut size,
+            hkey,
+            wide_value_name.as_ptr(),
+            std::ptr::null(),
+            &mut value_type,
+            buffer.as_mut_ptr() as *mut u8,
+            &mut size,
         );
         RegCloseKey(hkey);
         result == 0
@@ -134,7 +167,9 @@ pub fn is_auto_start_enabled() -> bool {
 }
 
 #[cfg(not(windows))]
-pub fn is_auto_start_enabled() -> bool { false }
+pub fn is_auto_start_enabled() -> bool {
+    false
+}
 
 fn make_icon() -> Icon {
     let w = 32u32;
@@ -162,7 +197,8 @@ fn make_icon() -> Icon {
 pub fn create_menu_items() -> MenuItems {
     let status = MenuItem::with_id("status", "Status: Running", false, None);
     let show_window = MenuItem::with_id("show_window", "Open Desktop Studio", true, None);
-    let start_on_login = CheckMenuItem::with_id("start_on_login", "Start with Windows", true, false, None);
+    let start_on_login =
+        CheckMenuItem::with_id("start_on_login", "Start with Windows", true, false, None);
     let logs = MenuItem::with_id("logs", "Open Logs", true, None);
     let exit = MenuItem::with_id("exit", "Exit", true, None);
 
@@ -182,11 +218,20 @@ pub fn create_menu_items() -> MenuItems {
     #[cfg(windows)]
     start_on_login.set_checked(is_auto_start_enabled());
 
-    MenuItems { tray, status, show_window, start_on_login, logs, exit }
+    MenuItems {
+        tray,
+        status,
+        show_window,
+        start_on_login,
+        logs,
+        exit,
+    }
 }
 
 pub fn open_logs_folder() {
-    let path = device_store::get_data_dir();
+    let path = std::env::var("APPDATA")
+        .map(|p| std::path::PathBuf::from(p).join("AutoMatDeck"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("data"));
     let _ = std::process::Command::new("explorer")
         .arg(path.to_string_lossy().to_string())
         .spawn();
@@ -235,7 +280,10 @@ pub fn run_message_pump(
             } else if event.id == "approve" {
                 let pair = pair_state.lock().unwrap().take();
                 if let Some(p) = pair {
-                    info!("[PAIR] User approved via tray: {} ({})", p.device_name, p.device_id);
+                    info!(
+                        "[PAIR] User approved via tray: {} ({})",
+                        p.device_name, p.device_id
+                    );
                     let _ = p.responder.send(true);
                 } else {
                     info!("[PAIR] Approve clicked but no pending pair request");
@@ -243,7 +291,10 @@ pub fn run_message_pump(
             } else if event.id == "reject" {
                 let pair = pair_state.lock().unwrap().take();
                 if let Some(p) = pair {
-                    info!("[PAIR] User rejected via tray: {} ({})", p.device_name, p.device_id);
+                    info!(
+                        "[PAIR] User rejected via tray: {} ({})",
+                        p.device_name, p.device_id
+                    );
                     let _ = p.responder.send(false);
                 } else {
                     info!("[PAIR] Reject clicked but no pending pair request");
@@ -259,7 +310,9 @@ pub fn run_message_pump(
 
         if has_pending {
             let status_text = if let Ok(state) = pair_state.lock() {
-                state.as_ref().map(|p| format!("⚠ Pending: {}", p.device_name))
+                state
+                    .as_ref()
+                    .map(|p| format!("⚠ Pending: {}", p.device_name))
                     .unwrap_or_else(|| "Status: Running".into())
             } else {
                 "Status: Running".into()
@@ -271,17 +324,31 @@ pub fn run_message_pump(
             let approve = MenuItem::with_id("approve", "  Approve", true, None);
             let reject = MenuItem::with_id("reject", "  Reject", true, None);
             let new_menu = Menu::with_items(&[
-                &menu.status, &sep, &info, &approve, &reject, &sep,
-                &menu.show_window, &menu.start_on_login, &menu.logs, &menu.exit,
-            ]).expect("Failed to build pending tray menu");
+                &menu.status,
+                &sep,
+                &info,
+                &approve,
+                &reject,
+                &sep,
+                &menu.show_window,
+                &menu.start_on_login,
+                &menu.logs,
+                &menu.exit,
+            ])
+            .expect("Failed to build pending tray menu");
             menu.tray.set_menu(Some(Box::new(new_menu)));
         } else {
             menu.status.set_text("Status: Running");
             let sep = PredefinedMenuItem::separator();
             let new_menu = Menu::with_items(&[
-                &menu.status, &sep,
-                &menu.show_window, &menu.start_on_login, &menu.logs, &menu.exit,
-            ]).expect("Failed to build default tray menu");
+                &menu.status,
+                &sep,
+                &menu.show_window,
+                &menu.start_on_login,
+                &menu.logs,
+                &menu.exit,
+            ])
+            .expect("Failed to build default tray menu");
             menu.tray.set_menu(Some(Box::new(new_menu)));
         }
 

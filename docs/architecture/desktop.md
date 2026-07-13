@@ -53,9 +53,27 @@ src/
 └── device_store.rs   # Persisted paired device registry
 ```
 
-The target splits agent responsibilities into focused modules: WebSocket
-handling (`ws.rs`), pairing (`pairing.rs`), and configuration (`config.rs`)
-extracted from their current inline locations.
+### Current implementation (v0.2)
+
+```
+src/
+├── main.rs           # Entry point, three-thread bootstrap
+├── agent.rs          # WebSocket server, pairing, connection handling
+├── gui.rs            # eframe UI panels (includes pairing tab)
+├── tray.rs           # System-tray icon, menu, single instance
+├── actions.rs        # Action definitions & registry
+├── discovery.rs      # mDNS advertisement (libmdns)
+├── pairing.rs        # PairingManager, OTP generation, validation, tests
+├── editor.rs         # Action editor with typed forms
+├── command.rs        # Command pattern for undoable edits
+├── model.rs          # Domain types
+├── repository.rs     # Data access layer
+├── state.rs          # App state
+└── device_store.rs   # Persistent config & paired device storage
+```
+
+Pairing (`pairing.rs`) and editor (`editor.rs`, `command.rs`, `model.rs`,
+`repository.rs`, `state.rs`) have been added ahead of the target timeline.
 
 ## Agent — Action execution
 
@@ -81,8 +99,13 @@ Desktop manages the pairing lifecycle:
 
 - Receives incoming connections from mobile devices.
 - Evaluates trust by checking against the stored device registry.
-- Requests user approval (via tray notification or GUI) for unknown devices.
+- Generates OTP codes for manual entry or QR scanning (v0.2+).
+- Validates OTP codes from `pair_request` messages via `PairingManager`.
+- Falls back to tray approval when no `pairing_code` is provided.
 - Stores trusted devices for future automatic acceptance.
+
+Pairing sessions are one-time use, expire after 5 minutes, and can be cancelled
+explicitly from the GUI.
 
 For the wire protocol (message types, direction, payload), see:
 [Wire Protocol](protocol.md)

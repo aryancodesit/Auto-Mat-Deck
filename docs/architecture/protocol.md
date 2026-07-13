@@ -43,8 +43,8 @@ The protocol is currently **implemented ad-hoc in the desktop codebase**
 | `ping` | ✅ Implemented |
 | `pong` | ✅ Implemented |
 | `error` | ✅ Implemented |
-| `pair_challenge` | ⏳ Planned (OTP enhancement, ADR-002) |
-| `pair_verify` | ⏳ Planned (OTP enhancement, ADR-002) |
+| `pair_challenge` | ❌ Not used | ADR-002 was implemented without new messages — OTP is an optional `pairing_code` field on `pair_request`. |
+| `pair_verify` | ❌ Not used | Same as above. |
 
 All payload examples below are **Draft v0.1.0-draft** and may change until
 the wire format is frozen at v1.
@@ -86,11 +86,12 @@ the wire format is frozen at v1.
 
 - **Sender:** Mobile
 - **Receiver:** Desktop
-- **Purpose:** Request to pair. Desktop prompts the user (via GUI or tray
-  notification) to approve or decline.
+- **Purpose:** Request to pair. Desktop validates the OTP code (if provided) or
+  falls back to tray approval.
 
 ```json
 { "type": "pair_request", "device_name": "My Phone" }
+{ "type": "pair_request", "device_name": "My Phone", "pairing_code": "482731" }
 ```
 
 ### `pair_accepted`
@@ -107,10 +108,23 @@ the wire format is frozen at v1.
 
 - **Sender:** Desktop
 - **Receiver:** Mobile
-- **Purpose:** Indicate the user declined the pairing, or the pairing timed out.
+- **Purpose:** Indicate the user declined the pairing, the pairing timed out,
+  or OTP validation failed. The `reason` field is a stable machine-readable
+  code. Mobile maps codes to display text locally.
+
+| Code | Meaning |
+|------|---------|
+| `code_mismatch` | OTP code does not match the active session |
+| `expired` | Pairing session has expired (5 min lifetime) |
+| `cancelled` | User cancelled pairing from Desktop GUI |
+| `already_used` | Pairing code was already consumed |
+| `no_session` | No active pairing session on Desktop |
+| `user_declined` | User explicitly declined via tray approval |
+| `timeout` | Tray approval timed out (120s) |
 
 ```json
-{ "type": "pair_rejected", "device_id": "amd-MY-DESKTOP", "reason": "User declined or timeout" }
+{ "type": "pair_rejected", "device_id": "amd-MY-DESKTOP", "reason": "code_mismatch" }
+{ "type": "pair_rejected", "device_id": "amd-MY-DESKTOP", "reason": "timeout" }
 ```
 
 ### `action`
@@ -167,12 +181,15 @@ the wire format is frozen at v1.
 { "type": "error", "message": "Device not paired. Complete pairing first." }
 ```
 
-## Sequence (current v0.x pairing flow)
+## Sequence (v0.2 pairing flow)
 
 ```mermaid
 sequenceDiagram
     participant M as Mobile
     participant D as Desktop
+
+    Note over D: User clicks "Generate Pairing Code"
+    D-->>D: Shows 6-digit OTP + QR
 
     M->>D: WebSocket connect
     M->>D: identify (device_id, device_name)
@@ -181,12 +198,12 @@ sequenceDiagram
         D-->>M: trusted
     else Device not paired
         D-->>M: untrusted
-        M->>D: pair_request (device_name)
-        Note over D: User approves/declines via tray or GUI
-        alt Approved
+        M->>D: pair_request (device_name, pairing_code)
+        alt Code valid & session active
             D-->>M: pair_accepted
-        else Declined or timeout
-            D-->>M: pair_rejected
+            Note over D: Device persisted as trusted
+        else Code expired / invalid / session cancelled
+            D-->>M: pair_rejected (reason)
         end
     end
 

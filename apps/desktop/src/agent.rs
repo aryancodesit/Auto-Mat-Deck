@@ -3,11 +3,13 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use crate::actions::ActionRegistry;
-use crate::device_store;
+use crate::pairing::{SharedPairingManager, ValidationResult, validation_reason_code};
+use crate::repository::DocumentStore;
+use crate::state::SharedState;
 
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -28,6 +30,9 @@ pub type PairState = Arc<Mutex<Option<PendingPair>>>;
 pub async fn run_server(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     pair_state: PairState,
+    pairing_manager: SharedPairingManager,
+    shared_state: SharedState,
+    store: Arc<dyn DocumentStore>,
 ) {
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
@@ -61,11 +66,7 @@ pub async fn run_server(
                 advertiser.provider_name(),
                 advertiser.device_id()
             ),
-            Err(e) => warn!(
-                "[{}] Failed to start: {}",
-                advertiser.provider_name(),
-                e
-            ),
+            Err(e) => warn!("[{}] Failed to start: {}", advertiser.provider_name(), e),
         }
     }
 
@@ -80,7 +81,10 @@ pub async fn run_server(
                 match result {
                     Ok((stream, peer)) => {
                         info!("[CONNECT] Incoming TCP connection from {}", peer);
-                        tokio::spawn(handle_connection(stream, peer, pair_state.clone()));
+                        let ss = shared_state.clone();
+                        let st = store.clone();
+                        let pm = pairing_manager.clone();
+                        tokio::spawn(handle_connection(stream, peer, pair_state.clone(), pm, ss, st));
                     }
                     Err(e) => {
                         error!("[CONNECT] Accept error: {}", e);
@@ -98,10 +102,29 @@ pub async fn run_server(
     }
 }
 
+fn is_trusted(state: &SharedState, device_id: &str) -> bool {
+    state.lock().unwrap().is_trusted(device_id)
+}
+
+fn touch_device(state: &SharedState, store: &dyn DocumentStore, device_id: &str) {
+    let mut app = state.lock().unwrap();
+    app.touch_device(device_id);
+    app.persist(store);
+}
+
+fn add_device(state: &SharedState, store: &dyn DocumentStore, device_id: &str, device_name: &str) {
+    let mut app = state.lock().unwrap();
+    app.add_device(device_id, device_name);
+    app.persist(store);
+}
+
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
     pair_state: PairState,
+    pairing_manager: SharedPairingManager,
+    shared_state: SharedState,
+    store: Arc<dyn DocumentStore>,
 ) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => {
@@ -141,14 +164,20 @@ async fn handle_connection(
                                 .to_string();
                             device_id = Some(id.clone());
 
-                            if device_store::is_trusted(&id) {
+                            if is_trusted(&shared_state, &id) {
                                 trusted = true;
-                                device_store::touch_device(&id);
-                                info!("[PAIR] Trusted device reconnected: {} ({}) from {}", name, id, peer);
+                                touch_device(&shared_state, &*store, &id);
+                                info!(
+                                    "[PAIR] Trusted device reconnected: {} ({}) from {}",
+                                    name, id, peer
+                                );
                                 let resp = json!({"type": "trusted", "device_id": id});
                                 let _ = write.send(Message::Text(resp.to_string().into())).await;
                             } else {
-                                info!("[PAIR] Unknown device identified: {} ({}) from {}", name, id, peer);
+                                info!(
+                                    "[PAIR] Unknown device identified: {} ({}) from {}",
+                                    name, id, peer
+                                );
                                 let resp = json!({
                                     "type": "untrusted",
                                     "message": "Device not paired. Send pair_request to initiate pairing."
@@ -168,9 +197,14 @@ async fn handle_connection(
                             let id = match device_id {
                                 Some(ref id) => id.clone(),
                                 None => {
-                                    info!("[PAIR] pair_request without prior identify from {}", peer);
-                                    let resp = json!({"type": "error", "message": "Must identify first"});
-                                    let _ = write.send(Message::Text(resp.to_string().into())).await;
+                                    info!(
+                                        "[PAIR] pair_request without prior identify from {}",
+                                        peer
+                                    );
+                                    let resp =
+                                        json!({"type": "error", "message": "Must identify first"});
+                                    let _ =
+                                        write.send(Message::Text(resp.to_string().into())).await;
                                     continue;
                                 }
                             };
@@ -181,6 +215,46 @@ async fn handle_connection(
                                 .unwrap_or("unknown")
                                 .to_string();
 
+                            // Try pairing_code from the request first (v0.2 OTP pairing)
+                            let pairing_code = req.get("pairing_code").and_then(|v| v.as_str());
+
+                            if let Some(code) = pairing_code {
+                                let result = pairing_manager.validate_code(code);
+                                let reason_code = validation_reason_code(&result);
+                                match result {
+                                    ValidationResult::Accepted => {
+                                        add_device(&shared_state, &*store, &id, &device_name);
+                                        trusted = true;
+                                        info!(
+                                            "[PAIR] OTP pair ACCEPTED for {} ({})",
+                                            device_name, id
+                                        );
+                                        let resp =
+                                            json!({"type": "pair_accepted", "device_id": id});
+                                        let _ = write
+                                            .send(Message::Text(resp.to_string().into()))
+                                            .await;
+                                        continue;
+                                    }
+                                    _ => {
+                                        info!(
+                                            "[PAIR] pairing_code rejected (reason={}) from {} ({})",
+                                            reason_code, device_name, id
+                                        );
+                                        let resp = json!({
+                                            "type": "pair_rejected",
+                                            "device_id": id,
+                                            "reason": reason_code
+                                        });
+                                        let _ = write
+                                            .send(Message::Text(resp.to_string().into()))
+                                            .await;
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            // Fallback: tray approval (legacy v0.1 path)
                             let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
 
                             {
@@ -191,16 +265,22 @@ async fn handle_connection(
                                     responder: resp_tx,
                                 });
                             }
-                            info!("[PAIR] Pair request from {} ({}) from {}, awaiting tray/desktop approval", device_name, id, peer);
+                            info!(
+                                "[PAIR] Pair request (no OTP) from {} ({}) from {}, awaiting tray approval",
+                                device_name, id, peer
+                            );
 
-                            let approved = match tokio::time::timeout(
+                            let timeout_result = tokio::time::timeout(
                                 Duration::from_secs(PAIR_TIMEOUT_SECS),
                                 resp_rx,
                             )
-                            .await
-                            {
-                                Ok(Ok(true)) => true,
-                                _ => false,
+                            .await;
+
+                            let (approved, tray_reason) = match timeout_result {
+                                Ok(Ok(true)) => (true, ""),
+                                Ok(Ok(false)) => (false, "user_declined"),
+                                Ok(Err(_)) => (false, "user_declined"),
+                                Err(_) => (false, "timeout"),
                             };
 
                             {
@@ -209,22 +289,35 @@ async fn handle_connection(
                             }
 
                             if approved {
-                                device_store::add_device(&id, &device_name);
+                                add_device(&shared_state, &*store, &id, &device_name);
                                 trusted = true;
-                                info!("[PAIR] Pair ACCEPTED for {} ({})", device_name, id);
+                                info!("[PAIR] Tray ACCEPTED for {} ({})", device_name, id);
                                 let resp = json!({"type": "pair_accepted", "device_id": id});
-                                if let Err(e) = write.send(Message::Text(resp.to_string().into())).await {
-                                    error!("[PAIR] Failed to send pair_accepted to {}: {}", peer, e);
+                                if let Err(e) =
+                                    write.send(Message::Text(resp.to_string().into())).await
+                                {
+                                    error!(
+                                        "[PAIR] Failed to send pair_accepted to {}: {}",
+                                        peer, e
+                                    );
                                 }
                             } else {
-                                info!("[PAIR] Pair REJECTED for {} ({})", device_name, id);
+                                info!(
+                                    "[PAIR] Pair REJECTED (reason={}) for {} ({})",
+                                    tray_reason, device_name, id
+                                );
                                 let resp = json!({
                                     "type": "pair_rejected",
                                     "device_id": id,
-                                    "reason": "User declined or timeout"
+                                    "reason": tray_reason
                                 });
-                                if let Err(e) = write.send(Message::Text(resp.to_string().into())).await {
-                                    error!("[PAIR] Failed to send pair_rejected to {}: {}", peer, e);
+                                if let Err(e) =
+                                    write.send(Message::Text(resp.to_string().into())).await
+                                {
+                                    error!(
+                                        "[PAIR] Failed to send pair_rejected to {}: {}",
+                                        peer, e
+                                    );
                                 }
                             }
                         }
@@ -249,7 +342,10 @@ async fn handle_connection(
 
                         "action" => {
                             if !trusted {
-                                let rid = req.get("request_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                let rid = req
+                                    .get("request_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
                                 let resp = json!({
                                     "type": "error",
                                     "request_id": rid,
@@ -265,15 +361,16 @@ async fn handle_connection(
                                 .unwrap_or("unknown")
                                 .to_string();
 
-                            let action_name = req
-                                .get("action")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let action_name =
+                                req.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
                             let empty = json!({});
                             let payload = req.get("payload").unwrap_or(&empty);
 
-                            info!("Action from {}: action={}, request_id={}", peer, action_name, request_id);
+                            info!(
+                                "Action from {}: action={}, request_id={}",
+                                peer, action_name, request_id
+                            );
 
                             let result = ACTIONS.execute(action_name, payload);
 
@@ -292,7 +389,8 @@ async fn handle_connection(
                                 }),
                             };
 
-                            if let Err(e) = write.send(Message::Text(resp.to_string().into())).await {
+                            if let Err(e) = write.send(Message::Text(resp.to_string().into())).await
+                            {
                                 warn!("Failed to send action result to {}: {}", peer, e);
                                 break;
                             }

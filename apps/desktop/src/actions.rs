@@ -1,5 +1,5 @@
+use serde_json::{Value, json};
 use std::collections::HashMap;
-use serde_json::{json, Value};
 
 #[cfg(windows)]
 use winrt_notification::{Duration, Sound, Toast};
@@ -48,7 +48,9 @@ pub struct ActionRegistry {
 
 impl ActionRegistry {
     pub fn new() -> Self {
-        let mut r = ActionRegistry { actions: HashMap::new() };
+        let mut r = ActionRegistry {
+            actions: HashMap::new(),
+        };
         r.register("launch", Box::new(LaunchAction));
         r.register("open_url", Box::new(OpenUrlAction));
         r.register("open_file", Box::new(OpenFileAction));
@@ -64,7 +66,9 @@ impl ActionRegistry {
     pub fn execute(&self, name: &str, payload: &Value) -> Result<Value, ActionError> {
         match self.actions.get(name) {
             Some(a) => a.execute(payload),
-            None => Err(ActionError { message: format!("Unknown action: {}", name) }),
+            None => Err(ActionError {
+                message: format!("Unknown action: {}", name),
+            }),
         }
     }
 }
@@ -80,7 +84,9 @@ impl Action for LaunchAction {
         let app = payload
             .get("app")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ActionError { message: "Missing 'app' in payload".into() })?;
+            .ok_or_else(|| ActionError {
+                message: "Missing 'app' in payload".into(),
+            })?;
 
         #[cfg(windows)]
         shell_execute("open", app)?;
@@ -94,7 +100,9 @@ impl Action for OpenUrlAction {
         let url = payload
             .get("url")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ActionError { message: "Missing 'url' in payload".into() })?;
+            .ok_or_else(|| ActionError {
+                message: "Missing 'url' in payload".into(),
+            })?;
 
         #[cfg(windows)]
         shell_execute("open", url)?;
@@ -108,7 +116,9 @@ impl Action for OpenFileAction {
         let path = payload
             .get("path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ActionError { message: "Missing 'path' in payload".into() })?;
+            .ok_or_else(|| ActionError {
+                message: "Missing 'path' in payload".into(),
+            })?;
 
         #[cfg(windows)]
         shell_execute("open", path)?;
@@ -138,10 +148,7 @@ impl Action for NotifyAction {
             .get("title")
             .and_then(|v| v.as_str())
             .unwrap_or("AutoMatDeck");
-        let body = payload
-            .get("body")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let body = payload.get("body").and_then(|v| v.as_str()).unwrap_or("");
 
         #[cfg(windows)]
         show_windows_toast(title, body)?;

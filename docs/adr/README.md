@@ -111,3 +111,4 @@ Every ADR begins with a YAML-style metadata block:
 | 004 | Bind WebSocket before advertising | Implemented | v0.2 |
 | 005 | Transport independence | Accepted | — |
 | 006 | Context is Advisory | Accepted | — |
+| 007 | Persistent entities use immutable IDs | Implemented | v0.2 |

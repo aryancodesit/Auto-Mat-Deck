@@ -1,12 +1,12 @@
 # ADR-002: Desktop initiates pairing
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-10
-**Applies To:** v0.x (planned OTP enhancement)
+**Applies To:** v0.2 (OTP pairing)
 **Supersedes:** —
 **Superseded By:** —
-**Engineering Phase:** EP-004 (proposed)
-**Release:** v0.3+
+**Engineering Phase:** EP-001, EP-004
+**Release:** v0.2
 
 ## Current baseline (v0.2)
 
