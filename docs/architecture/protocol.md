@@ -26,7 +26,7 @@ The protocol is currently **implemented ad-hoc in the desktop codebase**
 | `action_result` | Desktop | Mobile | Result of action execution |
 | `ping` | Mobile | Desktop | Keepalive probe |
 | `pong` | Desktop | Mobile | Keepalive response |
-| `active_profile_state` | Desktop | Mobile | Active runtime Profile projection (v0.3) |
+| `active_profile_state` | Desktop | Mobile | Active profile identity projection (v0.4) |
 | `error` | Desktop | Mobile | Error response to invalid messages |
 
 ## Implementation status
@@ -44,7 +44,7 @@ The protocol is currently **implemented ad-hoc in the desktop codebase**
 | `ping` | ✅ Implemented |
 | `pong` | ✅ Implemented |
 | `error` | ✅ Implemented |
-| `active_profile_state` | ❌ v0.3 — not yet implemented |
+| `active_profile_state` | ✅ Implemented (v0.4) |
 | `pair_challenge` | ❌ Not used | ADR-002 was implemented without new messages — OTP is an optional `pairing_code` field on `pair_request`. |
 | `pair_verify` | ❌ Not used | Same as above. |
 
@@ -187,68 +187,63 @@ the wire format is frozen at v1.
 
 - **Sender:** Desktop
 - **Receiver:** Mobile
-- **Purpose:** Projects the active runtime Profile definition to connected
-  clients. Sent after authorization (`trusted` or `pair_accepted`) and on
-  every subsequent state change (Profile switch, SelectionMode change).
-  Idempotent — the full state is sent each time.
+- **Purpose:** Projects the currently active Profile ID to connected clients.
+  Sent after authorization (`trusted` or `pair_accepted`) and on every
+  subsequent active-profile state change. Idempotent — the latest state is
+  authoritative.
 - **Direction:** Desktop-initiated (push). Only sent to trusted clients.
-- **v0.3:** Not yet implemented.
+- **v0.4:** Implemented.
 
-#### Payload contract
+#### Payload contract (v1)
 
-| Field | Type | Nullable | Description |
+| Field | Type | Required | Description |
 |---|---|---|---|
-| `type` | string | no | Always `"active_profile_state"` |
-| `selection_mode` | string | no | `"automatic"` or `"manual"` |
-| `profile` | object | yes | Complete active Profile definition or `null` |
-| `profile.id` | string | no | ProfileId as string |
-| `profile.name` | string | no | Display name |
-| `profile.pages` | array | no | Array of Page objects (may be empty) |
-| `pages[].id` | string | no | PageId as string |
-| `pages[].name` | string | no | Display name |
-| `pages[].buttons` | array | no | Array of Button objects (may be empty) |
-| `buttons[].id` | string | no | ButtonId as string |
-| `buttons[].label` | string | no | Display label |
-| `buttons[].action` | object | no | Action reference |
-| `action.action_name` | string | no | Registered action name |
-| `action.payload` | object | no | Action-specific arguments |
+| `type` | string | yes | Always `"active_profile_state"` |
+| `schema_version` | integer | yes | The exact integer `1` for v1 |
+| `active_profile_id` | string or null | yes | The currently active Profile ID, or `null` if no profile is active |
+
+**Field semantics:**
+
+- `type`: Message discriminator. Must be exactly `"active_profile_state"`.
+- `schema_version`: Required schema version. The v0.4 Android receiver accepts
+  only the exact integer `1`. Values `1.0`, `1.5`, or any non-integer are
+  rejected. An unsupported or invalid `schema_version` causes the receiver to
+  reject the frame — retained projection state is unchanged.
+- `active_profile_id`: Required field. A string representing the active
+  Profile ID, or explicit JSON `null` when no profile is active. A missing
+  `active_profile_id` is an invalid payload for the v1 receiver.
+
+**Active profile:**
 
 ```json
 {
   "type": "active_profile_state",
-  "selection_mode": "automatic",
-  "profile": {
-    "id": "abc123...",
-    "name": "Development",
-    "pages": [
-      {
-        "id": "def456...",
-        "name": "Main",
-        "buttons": [
-          {
-            "id": "ghi789...",
-            "label": "Open Chrome",
-            "action": {
-              "action_name": "launch",
-              "payload": { "app": "chrome" }
-            }
-          }
-        ]
-      }
-    ]
-  }
+  "schema_version": 1,
+  "active_profile_id": "coding"
 }
 ```
 
-Null profile (no active Profile):
+**No active profile (explicit null):**
 
 ```json
 {
   "type": "active_profile_state",
-  "selection_mode": "automatic",
-  "profile": null
+  "schema_version": 1,
+  "active_profile_id": null
 }
 ```
+
+#### Delivery semantics
+
+- **Trusted clients** receive the retained current projection after the
+  `trusted` or `pair_accepted` response.
+- **Subsequent changes** are delivered as updated `active_profile_state`
+  frames.
+- **Untrusted clients** must not receive projection state.
+- The Desktop is the exclusive authority for active-profile resolution and
+  context observation.
+- The Android role is projection consumer only — no context resolution, no
+  profile selection, no projection persistence.
 
 ## Sequence (v0.3 pairing + profile projection flow)
 
