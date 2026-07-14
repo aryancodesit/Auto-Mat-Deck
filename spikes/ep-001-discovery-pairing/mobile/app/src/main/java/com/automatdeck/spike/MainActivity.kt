@@ -51,6 +51,8 @@ class MainActivity : AppCompatActivity() {
     private var currentWebSocket: WebSocket? = null
     private var currentDevice: DiscoveredDevice? = null
 
+    private var latestProjection: ActiveProfileStateMessage? = null
+
     private val deviceId: String by lazy {
         val prefs = getSharedPreferences("auto_mat_deck", MODE_PRIVATE)
         var id = prefs.getString("device_id", null)
@@ -241,6 +243,20 @@ class MainActivity : AppCompatActivity() {
                             Log.w(TAG, "Error from ${device.name}: ${json.optString("message")}")
                             statusText.post {
                                 responseText.text = "Error: ${json.optString("message")}"
+                            }
+                        }
+
+                        "active_profile_state" -> {
+                            val projection = ActiveProfileStateMessage.fromJson(json)
+                            if (projection != null) {
+                                latestProjection = projection
+                                val idDisplay = projection.activeProfileId ?: "<none>"
+                                Log.i(TAG, "Projection accepted: active_profile_id=$idDisplay")
+                                statusText.post {
+                                    responseText.text = "Projection: active=$idDisplay"
+                                }
+                            } else {
+                                Log.w(TAG, "Projection rejected: invalid v1 frame from ${device.name}: $text")
                             }
                         }
 
