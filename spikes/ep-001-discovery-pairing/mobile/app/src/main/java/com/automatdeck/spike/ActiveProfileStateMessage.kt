@@ -14,7 +14,12 @@ data class ActiveProfileStateMessage(
             val rawSchemaVersion = json.opt("schema_version")
             val schemaVersion = when (rawSchemaVersion) {
                 is Int -> rawSchemaVersion
-                is Number -> rawSchemaVersion.toInt()
+                is Long -> {
+                    if (rawSchemaVersion !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) {
+                        return null
+                    }
+                    rawSchemaVersion.toInt()
+                }
                 else -> return null
             }
             if (schemaVersion != EXPECTED_SCHEMA_VERSION) return null

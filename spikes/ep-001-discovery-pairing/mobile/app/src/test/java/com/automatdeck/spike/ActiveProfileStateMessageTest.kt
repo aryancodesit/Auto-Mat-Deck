@@ -75,12 +75,21 @@ class ActiveProfileStateMessageTest {
     }
 
     @Test
-    fun parse_malformed_json_returns_null() {
-        try {
-            val json = JSONObject("""{bad json""")
-            assertNull(ActiveProfileStateMessage.fromJson(json))
-        } catch (_: Exception) {
-        }
+    fun parse_fractional_schema_version_is_rejected() {
+        val json = JSONObject("""{"type":"active_profile_state","schema_version":1.5,"active_profile_id":"coding"}""")
+        assertNull(ActiveProfileStateMessage.fromJson(json))
+    }
+
+    @Test
+    fun parse_decimal_one_schema_version_is_rejected() {
+        val json = JSONObject("""{"type":"active_profile_state","schema_version":1.0,"active_profile_id":"coding"}""")
+        assertNull(ActiveProfileStateMessage.fromJson(json))
+    }
+
+    @Test
+    fun parse_out_of_range_schema_version_is_rejected() {
+        val json = JSONObject("""{"type":"active_profile_state","schema_version":2147483648,"active_profile_id":"coding"}""")
+        assertNull(ActiveProfileStateMessage.fromJson(json))
     }
 
     @Test
@@ -138,7 +147,7 @@ class ActiveProfileStateMessageTest {
     }
 
     @Test
-    fun malformed_json_does_not_replace_existing_projection() {
+    fun invalid_projection_payload_does_not_replace_existing_projection() {
         var latestProjection: ActiveProfileStateMessage? = null
 
         val p1 = ActiveProfileStateMessage.fromJson(
