@@ -17,7 +17,12 @@ pub struct MdnsAnnouncer {
 
 impl MdnsAnnouncer {
     pub fn new(device_id: String, hostname: String, port: u16) -> Self {
-        Self { daemon: None, device_id, hostname, port }
+        Self {
+            daemon: None,
+            device_id,
+            hostname,
+            port,
+        }
     }
 }
 

@@ -2,9 +2,14 @@ package com.automatdeck.spike
 
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.Log
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -22,10 +27,16 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
-    companion object { private const val TAG = "AMD" }
+    companion object {
+        private const val TAG = "AMD"
+        private const val PAIR_TIMEOUT_MS = 130_000L
+    }
 
     private lateinit var btnScan: Button
     private lateinit var btnPair: Button
+    private lateinit var btnScanQR: Button
+    private lateinit var txtPairingCode: EditText
+    private lateinit var pairingCodeSection: View
     private lateinit var deviceList: RecyclerView
     private lateinit var statusText: TextView
     private lateinit var responseText: TextView
@@ -38,6 +49,7 @@ class MainActivity : AppCompatActivity() {
 
     private val discoveredDevices = mutableListOf<DiscoveredDevice>()
     private var currentWebSocket: WebSocket? = null
+    private var currentDevice: DiscoveredDevice? = null
 
     private val deviceId: String by lazy {
         val prefs = getSharedPreferences("auto_mat_deck", MODE_PRIVATE)
@@ -55,6 +67,9 @@ class MainActivity : AppCompatActivity() {
 
         btnScan = findViewById(R.id.btnScan)
         btnPair = findViewById(R.id.btnPair)
+        btnScanQR = findViewById(R.id.btnScanQR)
+        txtPairingCode = findViewById(R.id.txtPairingCode)
+        pairingCodeSection = findViewById(R.id.pairingCodeSection)
         deviceList = findViewById(R.id.deviceList)
         statusText = findViewById(R.id.statusText)
         responseText = findViewById(R.id.responseText)
@@ -63,6 +78,17 @@ class MainActivity : AppCompatActivity() {
 
         btnScan.setOnClickListener { scanForDevices() }
         btnPair.setOnClickListener { sendPairRequest() }
+        btnScanQR.setOnClickListener { scanQR() }
+
+        // Enable Pair button only when 6 digits are typed
+        txtPairingCode.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                val text = s.toString().trim()
+                btnPair.isEnabled = text.length == 6 && text.all { it.isDigit() }
+            }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        })
 
         autoReconnect()
     }
@@ -81,7 +107,7 @@ class MainActivity : AppCompatActivity() {
     private fun scanForDevices() {
         statusText.text = "Scanning..."
         btnScan.isEnabled = false
-        btnPair.visibility = View.GONE
+        pairingCodeSection.visibility = View.GONE
 
         scope.launch {
             val discoveryManager = DiscoveryManager(this@MainActivity)
@@ -108,10 +134,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectToDevice(device: DiscoveredDevice) {
+        currentDevice = device
         statusText.text = "Connecting to ${device.name}..."
         responseText.text = "Identifying..."
-        btnPair.visibility = View.GONE
+        pairingCodeSection.visibility = View.GONE
         btnPair.isEnabled = false
+        txtPairingCode.text.clear()
 
         val wsUrl = "ws://${device.host}:${device.port}"
         Log.i(TAG, "Connecting to $wsUrl (device=${device.name})")
@@ -145,17 +173,21 @@ class MainActivity : AppCompatActivity() {
                             statusText.post {
                                 statusText.text = "Connected to ${device.name} ✓"
                                 responseText.text = "Paired ✓"
+                                pairingCodeSection.visibility = View.GONE
                             }
                             sendPing(webSocket)
                         }
 
                         "untrusted" -> {
-                            Log.i(TAG, "Untrusted by ${device.name} — awaiting pair_request")
+                            Log.i(TAG, "Untrusted by ${device.name} — show pairing code input")
                             statusText.post {
                                 statusText.text = "Not paired with ${device.name}"
-                                responseText.text = "Tap Pair to continue"
-                                btnPair.visibility = View.VISIBLE
-                                btnPair.isEnabled = true
+                                responseText.text = "Enter the 6-digit pairing code from Desktop"
+                                pairingCodeSection.visibility = View.VISIBLE
+                                txtPairingCode.requestFocus()
+                                // Enable Pair button if code is already typed
+                                val code = txtPairingCode.text.toString().trim()
+                                btnPair.isEnabled = code.length == 6 && code.all { it.isDigit() }
                             }
                         }
 
@@ -166,16 +198,33 @@ class MainActivity : AppCompatActivity() {
                             statusText.post {
                                 statusText.text = "Connected to ${device.name} ✓"
                                 responseText.text = "Paired ✓"
-                                btnPair.visibility = View.GONE
+                                pairingCodeSection.visibility = View.GONE
                             }
                             sendPing(webSocket)
                         }
 
                         "pair_rejected" -> {
-                            Log.w(TAG, "Pair REJECTED by ${device.name}: ${json.optString("reason")}")
+                            val rawReason = json.optString("reason", "")
+                            val uiMessage = when (rawReason) {
+                                "code_mismatch" -> "Invalid pairing code. Check the code and try again."
+                                "expired" -> "Pairing code expired. Generate a new code on Desktop."
+                                "cancelled" -> "Pairing was cancelled on Desktop."
+                                "already_used" -> "This pairing code has already been used."
+                                "no_session" -> "No active pairing session. Generate a code on Desktop."
+                                "user_declined" -> "Pairing was declined on Desktop."
+                                "timeout" -> "Pairing approval timed out."
+                                else -> {
+                                    Log.w(TAG, "Unknown pair_rejected reason code: $rawReason")
+                                    "Pairing rejected ($rawReason). Try again."
+                                }
+                            }
+                            Log.i(TAG, "Pair REJECTED by ${device.name}: reason=$rawReason -> $uiMessage")
                             statusText.post {
                                 statusText.text = "Pairing rejected by ${device.name}"
-                                responseText.text = "Rejected: ${json.optString("reason")}"
+                                responseText.text = uiMessage
+                                // Re-enable pairing for retry
+                                pairingCodeSection.visibility = View.VISIBLE
+                                btnPair.isEnabled = false
                             }
                         }
 
@@ -213,7 +262,7 @@ class MainActivity : AppCompatActivity() {
                     statusText.text = "Connection failed: $detail"
                     responseText.text = "FAILED"
                     btnPair.isEnabled = false
-                    btnPair.visibility = View.GONE
+                    pairingCodeSection.visibility = View.GONE
                 }
             }
 
@@ -227,7 +276,7 @@ class MainActivity : AppCompatActivity() {
                 statusText.post {
                     statusText.text = "Connection closed: $reason"
                     btnPair.isEnabled = false
-                    btnPair.visibility = View.GONE
+                    pairingCodeSection.visibility = View.GONE
                 }
             }
         })
@@ -240,16 +289,50 @@ class MainActivity : AppCompatActivity() {
             statusText.text = "Not connected. Scan and connect first."
             return
         }
-        Log.i(TAG, "Sending pair_request (device_id=$deviceId)")
+        val code = txtPairingCode.text.toString().trim()
+        if (code.length != 6 || !code.all { it.isDigit() }) {
+            responseText.text = "Enter a 6-digit pairing code from Desktop"
+            return
+        }
+
+        Log.i(TAG, "Sending pair_request (device_id=$deviceId, pairing_code=$code)")
         statusText.text = "Requesting pairing..."
         responseText.text = "Waiting for desktop approval..."
+        btnPair.isEnabled = false
+
         val pairReq = JSONObject().apply {
             put("type", "pair_request")
             put("device_id", deviceId)
             put("device_name", "Android-${Build.MODEL}")
+            put("pairing_code", code)
         }
         val sent = ws.send(pairReq.toString())
         Log.i(TAG, "pair_request sent, result=$sent")
+
+        // Post a timeout handler so the UI doesn't wait forever
+        Handler(Looper.getMainLooper()).postDelayed({
+            statusText.post {
+                if (statusText.text == "Requesting pairing..." ||
+                    statusText.text == "Waiting for desktop approval..."
+                ) {
+                    statusText.text = "Pairing timed out. Check the code and try again."
+                    responseText.text = "TIMEOUT"
+                    btnPair.isEnabled = true
+                }
+            }
+        }, PAIR_TIMEOUT_MS)
+    }
+
+    private fun scanQR() {
+        Log.i(TAG, "QR scan requested — not yet implemented")
+        val code = txtPairingCode.text.toString().trim()
+        if (code.length == 6 && code.all { it.isDigit() }) {
+            sendPairRequest()
+        } else {
+            responseText.text = "QR scanning not available yet. Enter the code manually."
+        }
+        // ponytail: QR via ML Kit deferred until production mobile app (v0.3).
+        // Spike stays OTP-only for now.
     }
 
     private fun sendPing(webSocket: WebSocket) {
