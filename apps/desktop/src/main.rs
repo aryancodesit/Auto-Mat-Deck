@@ -10,6 +10,7 @@ mod model;
 mod observer;
 mod pairing;
 mod projection;
+mod projection_transport;
 mod repository;
 mod state;
 mod tray;
@@ -111,10 +112,12 @@ fn main() -> eframe::Result<()> {
         })
         .expect("Failed to spawn observer thread");
 
-    // Projection pipeline: a logging publisher for Sprint 3.
-    // Replace with a fan-out or WebSocket publisher in later sprints.
+    // Projection transport: publishes approved projections into a
+    // tokio::sync::watch channel for trusted WebSocket delivery.
+    let (projection_transport, _projection_state_rx) =
+        projection_transport::ProjectionTransportPublisher::new();
     let projection_publisher: Arc<dyn projection::ProjectionPublisher> =
-        Arc::new(projection::LoggingPublisher);
+        Arc::new(projection_transport);
     let cell_for_projection = observation_cell.clone();
     let shutdown_rx_for_projection = shutdown_rx_from_main.clone();
     let projection_handle = std::thread::Builder::new()
