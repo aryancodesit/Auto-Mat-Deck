@@ -58,6 +58,9 @@ fn main() -> eframe::Result<()> {
 
     let (shutdown_tx, shutdown_rx_from_main) = tokio::sync::watch::channel(false);
 
+    let (projection_transport, projection_state_rx) =
+        projection_transport::ProjectionTransportPublisher::new();
+
     let ps_for_server = pair_state.clone();
     let pm_for_server = pairing_manager.clone();
     let rt_for_server = shared_runtime.clone();
@@ -73,6 +76,7 @@ fn main() -> eframe::Result<()> {
                 pm_for_server,
                 rt_for_server,
                 repo_for_server,
+                projection_state_rx,
             ));
         })
         .expect("Failed to spawn server thread");
@@ -112,10 +116,6 @@ fn main() -> eframe::Result<()> {
         })
         .expect("Failed to spawn observer thread");
 
-    // Projection transport: publishes approved projections into a
-    // tokio::sync::watch channel for trusted WebSocket delivery.
-    let (projection_transport, _projection_state_rx) =
-        projection_transport::ProjectionTransportPublisher::new();
     let projection_publisher: Arc<dyn projection::ProjectionPublisher> =
         Arc::new(projection_transport);
     let cell_for_projection = observation_cell.clone();
