@@ -9,6 +9,7 @@ mod gui;
 mod model;
 mod observer;
 mod pairing;
+mod projection;
 mod repository;
 mod state;
 mod tray;
@@ -78,7 +79,11 @@ fn main() -> eframe::Result<()> {
     #[cfg(windows)]
     let obs_rt = shared_runtime.clone();
     #[cfg(windows)]
+    let observation_cell = Arc::new(projection::TransitionCell::new());
+    #[cfg(windows)]
     let shutdown_rx_for_observer = shutdown_rx_from_main.clone();
+    #[cfg(windows)]
+    let cell_for_observer = observation_cell.clone();
     #[cfg(windows)]
     let observer_handle = std::thread::Builder::new()
         .name("context-observer".into())
@@ -95,15 +100,48 @@ fn main() -> eframe::Result<()> {
                 }
                 let observation = observer::ForegroundObserver::current_context();
                 if let Some(snapshot) = observer::successful_observation(observation) {
-                    let _transition = {
+                    let transition = {
                         let mut guard = obs_rt.lock().unwrap();
                         guard.apply_context_observation(snapshot)
                     };
+                    cell_for_observer.store(transition);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
         })
         .expect("Failed to spawn observer thread");
+
+    // Projection pipeline: a logging publisher for Sprint 3.
+    // Replace with a fan-out or WebSocket publisher in later sprints.
+    let projection_publisher: Arc<dyn projection::ProjectionPublisher> =
+        Arc::new(projection::LoggingPublisher);
+    let cell_for_projection = observation_cell.clone();
+    let shutdown_rx_for_projection = shutdown_rx_from_main.clone();
+    let projection_handle = std::thread::Builder::new()
+        .name("projection".into())
+        .spawn(move || {
+            let mut policy = projection::PublicationPolicy::new();
+            loop {
+                let shutdown = match shutdown_rx_for_projection.has_changed() {
+                    Ok(true) => *shutdown_rx_for_projection.borrow(),
+                    Ok(false) => false,
+                    Err(_) => true,
+                };
+                if shutdown {
+                    break;
+                }
+                // Wake on notification; fall back to 200ms timeout for shutdown check
+                let transition = cell_for_projection
+                    .wait_and_take_timeout(std::time::Duration::from_millis(200));
+                if let Some(transition) = transition {
+                    let proj = projection::project(&transition);
+                    if policy.should_publish(&proj) {
+                        projection_publisher.publish(&proj);
+                    }
+                }
+            }
+        })
+        .expect("Failed to spawn projection thread");
 
     let ps_for_tray = pair_state.clone();
     let rt_for_tray = shared_runtime.clone();
@@ -140,6 +178,7 @@ fn main() -> eframe::Result<()> {
     info!("GUI closed, initiating shutdown...");
     drop(shutdown_rx_from_main);
     let _ = server_handle.join();
+    let _ = projection_handle.join();
     #[cfg(windows)]
     let _ = observer_handle.join();
     let _ = tray_handle.join();
