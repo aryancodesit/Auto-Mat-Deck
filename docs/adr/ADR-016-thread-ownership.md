@@ -1,6 +1,6 @@
 # ADR-016: Thread Ownership
 
-**Status:** Draft
+**Status:** Accepted
 **Date:** 2026-07-13
 
 ## Context

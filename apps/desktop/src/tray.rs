@@ -53,7 +53,7 @@ pub fn ensure_single_instance() -> Option<HANDLE> {
         }
         if err == ERROR_ALREADY_EXISTS {
             CloseHandle(handle);
-            println!("AutoMatDeck Agent is already running.");
+            info!("AutoMatDeck Agent is already running.");
             std::process::exit(0);
         }
         Some(handle)

@@ -1,6 +1,6 @@
 # ADR-015: Broadcast Semantics
 
-**Status:** Draft
+**Status:** Accepted
 **Date:** 2026-07-13
 
 ## Context
