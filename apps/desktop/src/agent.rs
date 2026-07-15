@@ -35,6 +35,7 @@ pub async fn run_server(
     shared: SharedRuntime,
     store: Arc<dyn DocumentStore>,
     projection_state_rx: watch::Receiver<Option<Arc<str>>>,
+    control_surface_state_rx: watch::Receiver<Option<Arc<str>>>,
 ) {
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
@@ -87,7 +88,8 @@ pub async fn run_server(
                             let st = store.clone();
                             let pm = pairing_manager.clone();
                             let prx = projection_state_rx.clone();
-                            tokio::spawn(handle_connection(stream, peer, pair_state.clone(), pm, ss, st, prx));
+                            let crx = control_surface_state_rx.clone();
+                            tokio::spawn(handle_connection(stream, peer, pair_state.clone(), pm, ss, st, prx, crx));
                     }
                     Err(e) => {
                         error!("[CONNECT] Accept error: {}", e);
@@ -134,6 +136,7 @@ async fn handle_connection(
     shared: SharedRuntime,
     store: Arc<dyn DocumentStore>,
     mut projection_rx: watch::Receiver<Option<Arc<str>>>,
+    mut control_surface_state_rx: watch::Receiver<Option<Arc<str>>>,
 ) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => {
@@ -149,6 +152,8 @@ async fn handle_connection(
     let (mut write, mut read) = ws_stream.split();
     let mut device_id: Option<String> = None;
     let mut projection_active = false;
+    let mut aps_open = true;
+    let mut css_open = true;
 
     loop {
         // Before projection is active: only inbound messages.
@@ -156,7 +161,7 @@ async fn handle_connection(
         let inbound = if projection_active {
             tokio::select! {
                 msg = read.next() => msg,
-                changed = projection_rx.changed() => {
+                changed = projection_rx.changed(), if aps_open => {
                     match changed {
                         Ok(()) => {
                             let snapshot = projection_rx.borrow_and_update().clone();
@@ -169,8 +174,27 @@ async fn handle_connection(
                             }
                         }
                         Err(_) => {
-                            info!("[PROJ] Projection channel closed for {}", peer);
-                            break;
+                            info!("[PROJ] APS channel closed for {}", peer);
+                            aps_open = false;
+                        }
+                    }
+                    continue;
+                }
+                changed = control_surface_state_rx.changed(), if css_open => {
+                    match changed {
+                        Ok(()) => {
+                            let snapshot = control_surface_state_rx.borrow_and_update().clone();
+                            if let Some(payload) = snapshot {
+                                let text = Message::Text(payload.to_string().into());
+                                if let Err(e) = write.send(text).await {
+                                    warn!("[CSS] Write failed for {}: {}", peer, e);
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            warn!("[CSS] Control surface channel closed for {}", peer);
+                            css_open = false;
                         }
                     }
                     continue;
@@ -226,6 +250,17 @@ async fn handle_connection(
                                         write.send(Message::Text(payload.to_string().into())).await
                                     {
                                         warn!("[PROJ] Write failed for {}: {}", peer, e);
+                                        break;
+                                    }
+                                }
+                                // Send retained CSS projection
+                                let css_snapshot =
+                                    control_surface_state_rx.borrow_and_update().clone();
+                                if let Some(payload) = css_snapshot {
+                                    if let Err(e) =
+                                        write.send(Message::Text(payload.to_string().into())).await
+                                    {
+                                        warn!("[CSS] Write failed for {}: {}", peer, e);
                                         break;
                                     }
                                 }
@@ -307,6 +342,18 @@ async fn handle_connection(
                                                 break;
                                             }
                                         }
+                                        // Send retained CSS projection
+                                        let css_snapshot =
+                                            control_surface_state_rx.borrow_and_update().clone();
+                                        if let Some(payload) = css_snapshot {
+                                            if let Err(e) = write
+                                                .send(Message::Text(payload.to_string().into()))
+                                                .await
+                                            {
+                                                warn!("[CSS] Write failed for {}: {}", peer, e);
+                                                break;
+                                            }
+                                        }
                                         projection_active = true;
                                         continue;
                                     }
@@ -379,6 +426,17 @@ async fn handle_connection(
                                         write.send(Message::Text(payload.to_string().into())).await
                                     {
                                         warn!("[PROJ] Write failed for {}: {}", peer, e);
+                                        break;
+                                    }
+                                }
+                                // Send retained CSS projection
+                                let css_snapshot =
+                                    control_surface_state_rx.borrow_and_update().clone();
+                                if let Some(payload) = css_snapshot {
+                                    if let Err(e) =
+                                        write.send(Message::Text(payload.to_string().into())).await
+                                    {
+                                        warn!("[CSS] Write failed for {}: {}", peer, e);
                                         break;
                                     }
                                 }
@@ -539,6 +597,76 @@ mod tests {
         Arc::new(PairingManager::new())
     }
 
+    /// Read the next WebSocket text message and return the parsed JSON.
+    /// Panics on timeout, error, or non-text message.
+    async fn recv_json(
+        ws: &mut (
+                 impl futures_util::StreamExt<
+            Item = Result<Message, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin
+             ),
+        timeout: std::time::Duration,
+    ) -> serde_json::Value {
+        let msg = tokio::time::timeout(timeout, ws.next())
+            .await
+            .expect("timeout waiting for message")
+            .expect("stream ended")
+            .expect("ws error");
+        match msg {
+            Message::Text(text) => serde_json::from_str(&text).expect("valid JSON"),
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    /// Search incoming WebSocket messages for one with the given `type` field.
+    /// Consumes messages until found, then returns the full parsed JSON.
+    async fn recv_message_type(
+        ws: &mut (
+                 impl futures_util::StreamExt<
+            Item = Result<Message, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin
+             ),
+        expected_type: &str,
+        timeout: std::time::Duration,
+        max_messages: usize,
+    ) -> serde_json::Value {
+        for i in 0..max_messages {
+            let msg = tokio::time::timeout(timeout, ws.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "timeout after {} message(s) waiting for type={}",
+                        i, expected_type
+                    )
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "stream ended after {} message(s) waiting for type={}",
+                        i, expected_type
+                    )
+                })
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "ws error after {} message(s) waiting for type={}: {}",
+                        i, expected_type, e
+                    )
+                });
+            match msg {
+                Message::Text(text) => {
+                    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if parsed["type"] == expected_type {
+                        return parsed;
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!(
+            "did not find type={} after checking {} messages",
+            expected_type, max_messages
+        );
+    }
+
     /// Run a WebSocket client that sends `requests` and collects responses,
     /// while the server side runs `handle_connection`.
     async fn run_test(
@@ -556,6 +684,7 @@ mod tests {
 
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = projection_tx.subscribe();
+        let (_css_tx, css_rx) = watch::channel(None);
         let shared_clone = shared.clone();
         let pm = pairing_manager.clone();
         let ps = pair_state.clone();
@@ -571,6 +700,7 @@ mod tests {
                 shared_clone,
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
+                css_rx,
             )
             .await;
         });
@@ -621,6 +751,31 @@ mod tests {
 
     fn pair_request_otp(code: &str) -> serde_json::Value {
         json!({"type": "pair_request", "device_name": "test-client", "pairing_code": code})
+    }
+
+    fn make_css_payload(
+        profile_id: &str,
+        profile_name: &str,
+        page_id: &str,
+        page_name: &str,
+        button_id: &str,
+        label: &str,
+    ) -> String {
+        json!({
+            "type": "control_surface_state",
+            "schema_version": 1,
+            "profile_id": profile_id,
+            "profile_name": profile_name,
+            "pages": [{
+                "page_id": page_id,
+                "name": page_name,
+                "buttons": [{
+                    "button_id": button_id,
+                    "label": label
+                }]
+            }]
+        })
+        .to_string()
     }
 
     // ── Tests ──
@@ -854,6 +1009,7 @@ mod tests {
 
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = tx.subscribe();
+        let (_css_tx, css_rx) = watch::channel(None);
 
         let server_handle = tokio::spawn(async move {
             let (tcp_stream, peer) = listener.accept().await.expect("accept");
@@ -865,6 +1021,7 @@ mod tests {
                 shared,
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
+                css_rx,
             )
             .await;
         });
@@ -1013,66 +1170,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn projection_sender_closure_terminates_connection() {
-        let shared = make_runtime();
-        add_trusted_device(&shared, "trusted-device");
-        let pm = make_pairing_manager();
-        // Create a watch channel where we control the sender
-        let (tx, _rx) = watch::channel::<Option<Arc<str>>>(None);
-        tx.send_replace(Some(Arc::from(
-            "{\"type\":\"active_profile_state\",\"schema_version\":1,\"active_profile_id\":\"p1\"}",
-        )));
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let url = format!("ws://{}/", addr);
-
-        let pair_state: PairState = Arc::new(Mutex::new(None));
-        let projection_rx = tx.subscribe();
-
-        // Drop the original tx so our clone is the only sender left
-        // Then we can drop it to close the channel
-        let server_handle = tokio::spawn(async move {
-            let (tcp_stream, peer) = listener.accept().await.expect("accept");
-            handle_connection(
-                tcp_stream,
-                peer,
-                pair_state,
-                pm,
-                shared,
-                Arc::new(crate::repository::JsonRepository::new()),
-                projection_rx,
-            )
-            .await;
-        });
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let (mut ws_stream, _) = connect_async(&url).await.expect("connect");
-
-        // Identify as trusted — get snapshot
-        let identify_req = serde_json::to_string(&identify("trusted-device")).unwrap();
-        ws_stream
-            .send(Message::Text(identify_req.into()))
-            .await
-            .unwrap();
-
-        // Read trusted + snapshot
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), ws_stream.next()).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), ws_stream.next()).await;
-
-        // Drop the sender — projecti on channel closes
-        drop(tx);
-
-        // Verify connection eventually closes (server sees RecvError::Closed and exits)
-        let close_result =
-            tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;
-        assert!(close_result.is_ok(), "server should exit when sender drops");
-
-        drop(ws_stream);
-    }
-
-    #[tokio::test]
     async fn one_connection_write_failure_does_not_affect_others() {
         let shared = make_runtime();
         add_trusted_device(&shared, "trusted-device");
@@ -1098,16 +1195,18 @@ mod tests {
         let pair_state2: PairState = Arc::new(Mutex::new(None));
         let rx1 = tx.subscribe();
         let rx2 = tx.subscribe();
+        let (_css_tx, css_rx1) = watch::channel(None);
+        let css_rx2 = css_rx1.clone();
         let repo = Arc::new(crate::repository::JsonRepository::new());
         let repo2 = repo.clone();
 
         let h1 = tokio::spawn(async move {
             let (tcp, peer) = l1.accept().await.unwrap();
-            handle_connection(tcp, peer, pair_state1, pm, shared, repo, rx1).await;
+            handle_connection(tcp, peer, pair_state1, pm, shared, repo, rx1, css_rx1).await;
         });
         let h2 = tokio::spawn(async move {
             let (tcp, peer) = l2.accept().await.unwrap();
-            handle_connection(tcp, peer, pair_state2, pm2, shared2, repo2, rx2).await;
+            handle_connection(tcp, peer, pair_state2, pm2, shared2, repo2, rx2, css_rx2).await;
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1173,6 +1272,7 @@ mod tests {
 
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = tx.subscribe();
+        let (_css_tx, css_rx) = watch::channel(None);
 
         let server_handle = tokio::spawn(async move {
             let (tcp_stream, peer) = listener.accept().await.expect("accept");
@@ -1184,6 +1284,7 @@ mod tests {
                 shared,
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
+                css_rx,
             )
             .await;
         });
@@ -1223,6 +1324,284 @@ mod tests {
             // Must converge to P4 (latest)
             assert_eq!(val["active_profile_id"], "p4");
         }
+
+        drop(ws_stream);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server_handle).await;
+    }
+
+    // ── CSS WebSocket transport tests ──
+
+    #[tokio::test]
+    async fn css_live_push_after_trust() {
+        let shared = make_runtime();
+        add_trusted_device(&shared, "trusted-device");
+        let pm = make_pairing_manager();
+        let (aps_tx, _rx) = watch::channel(None);
+        let (css_tx, css_rx) = watch::channel::<Option<Arc<str>>>(None);
+        aps_tx.send_replace(Some(Arc::from(
+            "{\"type\":\"active_profile_state\",\"schema_version\":1,\"active_profile_id\":\"p1\"}",
+        )));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("ws://{}/", addr);
+
+        let pair_state: PairState = Arc::new(Mutex::new(None));
+        let projection_rx = aps_tx.subscribe();
+        let css_rx = css_rx;
+
+        let server_handle = tokio::spawn(async move {
+            let (tcp_stream, peer) = listener.accept().await.expect("accept");
+            handle_connection(
+                tcp_stream,
+                peer,
+                pair_state,
+                pm,
+                shared,
+                Arc::new(crate::repository::JsonRepository::new()),
+                projection_rx,
+                css_rx,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (mut ws_stream, _) = connect_async(&url).await.expect("connect");
+
+        // Identify as trusted — get trusted + APS snapshot
+        let id_req = serde_json::to_string(&identify("trusted-device")).unwrap();
+        ws_stream.send(Message::Text(id_req.into())).await.unwrap();
+
+        // Consume trusted + APS
+        let _trusted = recv_json(&mut ws_stream, std::time::Duration::from_millis(500)).await;
+        let _aps = recv_json(&mut ws_stream, std::time::Duration::from_millis(500)).await;
+
+        // NOW publish a CSS payload after trust is established
+        let css_payload =
+            make_css_payload("prof-1", "Gaming", "pg-1", "Desktop", "btn-a", "Launch");
+        css_tx.send_replace(Some(Arc::from(css_payload)));
+
+        // Receive CSS via live forwarding (the changed() branch)
+        let css = recv_message_type(
+            &mut ws_stream,
+            "control_surface_state",
+            std::time::Duration::from_millis(500),
+            10,
+        )
+        .await;
+
+        assert_eq!(css["schema_version"], 1);
+        assert_eq!(css["profile_id"], "prof-1");
+        assert_eq!(css["profile_name"], "Gaming");
+        assert_eq!(css["pages"][0]["page_id"], "pg-1");
+        assert_eq!(css["pages"][0]["name"], "Desktop");
+        assert_eq!(css["pages"][0]["buttons"][0]["button_id"], "btn-a");
+        assert_eq!(css["pages"][0]["buttons"][0]["label"], "Launch");
+
+        drop(ws_stream);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server_handle).await;
+    }
+
+    #[tokio::test]
+    async fn css_retained_snapshot_delivered_after_trust() {
+        let shared = make_runtime();
+        add_trusted_device(&shared, "trusted-device");
+        let pm = make_pairing_manager();
+        let (aps_tx, _rx) = watch::channel(None);
+        aps_tx.send_replace(Some(Arc::from(
+            "{\"type\":\"active_profile_state\",\"schema_version\":1,\"active_profile_id\":\"p1\"}",
+        )));
+
+        // CSS payload retained BEFORE connection
+        let css_payload = make_css_payload("prof-2", "Coding", "pg-2", "Dev", "btn-b", "Build");
+        let (css_tx, css_rx) = watch::channel(Some(Arc::from(css_payload)));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("ws://{}/", addr);
+
+        let pair_state: PairState = Arc::new(Mutex::new(None));
+        let projection_rx = aps_tx.subscribe();
+
+        let server_handle = tokio::spawn(async move {
+            let (tcp_stream, peer) = listener.accept().await.expect("accept");
+            handle_connection(
+                tcp_stream,
+                peer,
+                pair_state,
+                pm,
+                shared,
+                Arc::new(crate::repository::JsonRepository::new()),
+                projection_rx,
+                css_rx,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (mut ws_stream, _) = connect_async(&url).await.expect("connect");
+
+        // Identify — no css_tx.send() after this point
+        let id_req = serde_json::to_string(&identify("trusted-device")).unwrap();
+        ws_stream.send(Message::Text(id_req.into())).await.unwrap();
+
+        // Find the retained CSS message (must arrive without post-trust send)
+        let css = recv_message_type(
+            &mut ws_stream,
+            "control_surface_state",
+            std::time::Duration::from_millis(500),
+            10,
+        )
+        .await;
+
+        assert_eq!(css["schema_version"], 1);
+        assert_eq!(css["profile_id"], "prof-2");
+        assert_eq!(css["profile_name"], "Coding");
+        assert_eq!(css["pages"][0]["page_id"], "pg-2");
+
+        // Verify no css_tx.send() happened — this would be caught by the
+        // fact that we never call send_replace on css_tx after this point
+        drop(css_tx);
+
+        drop(ws_stream);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server_handle).await;
+    }
+
+    #[tokio::test]
+    async fn css_channel_closure_does_not_stop_aps_forwarding() {
+        let shared = make_runtime();
+        add_trusted_device(&shared, "trusted-device");
+        let pm = make_pairing_manager();
+        let (aps_tx, _rx) = watch::channel(None);
+        let (css_tx, css_rx) = watch::channel::<Option<Arc<str>>>(None);
+        aps_tx.send_replace(Some(Arc::from(
+            "{\"type\":\"active_profile_state\",\"schema_version\":1,\"active_profile_id\":\"p1\"}",
+        )));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("ws://{}/", addr);
+
+        let pair_state: PairState = Arc::new(Mutex::new(None));
+        let projection_rx = aps_tx.subscribe();
+
+        let server_handle = tokio::spawn(async move {
+            let (tcp_stream, peer) = listener.accept().await.expect("accept");
+            handle_connection(
+                tcp_stream,
+                peer,
+                pair_state,
+                pm,
+                shared,
+                Arc::new(crate::repository::JsonRepository::new()),
+                projection_rx,
+                css_rx,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (mut ws_stream, _) = connect_async(&url).await.expect("connect");
+
+        // Identify as trusted
+        let id_req = serde_json::to_string(&identify("trusted-device")).unwrap();
+        ws_stream.send(Message::Text(id_req.into())).await.unwrap();
+
+        // Consume trusted + APS
+        let _trusted = recv_json(&mut ws_stream, std::time::Duration::from_millis(500)).await;
+        let _aps = recv_json(&mut ws_stream, std::time::Duration::from_millis(500)).await;
+
+        // Drop the CSS sender — disables only CSS branch
+        drop(css_tx);
+
+        // Publish a new APS payload
+        aps_tx.send_replace(Some(Arc::from(
+            "{\"type\":\"active_profile_state\",\"schema_version\":1,\"active_profile_id\":\"p2\"}",
+        )));
+
+        // Client must still receive APS even though CSS channel is closed
+        let aps = recv_message_type(
+            &mut ws_stream,
+            "active_profile_state",
+            std::time::Duration::from_millis(500),
+            10,
+        )
+        .await;
+
+        assert_eq!(aps["active_profile_id"], "p2");
+
+        drop(ws_stream);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server_handle).await;
+    }
+
+    #[tokio::test]
+    async fn aps_channel_closure_does_not_stop_css_forwarding() {
+        let shared = make_runtime();
+        add_trusted_device(&shared, "trusted-device");
+        let pm = make_pairing_manager();
+        let (aps_tx, _rx) = watch::channel(None);
+        let (css_tx, css_rx) = watch::channel::<Option<Arc<str>>>(None);
+        aps_tx.send_replace(Some(Arc::from(
+            "{\"type\":\"active_profile_state\",\"schema_version\":1,\"active_profile_id\":\"p1\"}",
+        )));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("ws://{}/", addr);
+
+        let pair_state: PairState = Arc::new(Mutex::new(None));
+        let projection_rx = aps_tx.subscribe();
+
+        let server_handle = tokio::spawn(async move {
+            let (tcp_stream, peer) = listener.accept().await.expect("accept");
+            handle_connection(
+                tcp_stream,
+                peer,
+                pair_state,
+                pm,
+                shared,
+                Arc::new(crate::repository::JsonRepository::new()),
+                projection_rx,
+                css_rx,
+            )
+            .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (mut ws_stream, _) = connect_async(&url).await.expect("connect");
+
+        // Identify as trusted
+        let id_req = serde_json::to_string(&identify("trusted-device")).unwrap();
+        ws_stream.send(Message::Text(id_req.into())).await.unwrap();
+
+        // Consume trusted + APS
+        let _trusted = recv_json(&mut ws_stream, std::time::Duration::from_millis(500)).await;
+        let _aps = recv_json(&mut ws_stream, std::time::Duration::from_millis(500)).await;
+
+        // Drop the APS sender — disables only APS branch
+        drop(aps_tx);
+
+        // Publish a new CSS payload
+        let css_payload = make_css_payload("prof-3", "Design", "pg-3", "UI", "btn-c", "Render");
+        css_tx.send_replace(Some(Arc::from(css_payload)));
+
+        // Client must still receive CSS even though APS channel is closed
+        let css = recv_message_type(
+            &mut ws_stream,
+            "control_surface_state",
+            std::time::Duration::from_millis(500),
+            10,
+        )
+        .await;
+
+        assert_eq!(css["schema_version"], 1);
+        assert_eq!(css["profile_id"], "prof-3");
+        assert_eq!(css["profile_name"], "Design");
+        assert_eq!(css["pages"][0]["buttons"][0]["label"], "Render");
 
         drop(ws_stream);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server_handle).await;

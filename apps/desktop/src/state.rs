@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::command::{self, Command, CommandError};
 use crate::model::*;
+use crate::projection::TransitionCell;
 use crate::repository::DocumentStore;
 
 /// In-memory application state. The GUI reads from here, never from disk.
@@ -134,18 +135,26 @@ impl AppState {
 
 /// Desktop runtime: wraps persisted AppState and transient ProfileRuntime.
 ///
-/// Exactly two fields. A third field requires explicit architecture review.
+/// Exactly three fields. A fourth field requires explicit architecture review.
 pub struct DesktopRuntime {
     pub app: AppState,
     pub runtime: ProfileRuntime,
+    pub transition_cell: TransitionCell,
 }
 
 impl DesktopRuntime {
     /// Apply a domain command, reconcile runtime, return success/failure.
     /// Caller is responsible for persistence after this.
     pub fn dispatch_document(&mut self, cmd: &Command) -> Result<(), CommandError> {
+        let prev = self.runtime.active_profile_id.clone();
         self.app.dispatch(cmd)?;
         self.runtime.reconcile(&self.app.document);
+        let active = self.runtime.active_profile_id.clone();
+        self.transition_cell.store(RuntimeTransition {
+            context_changed: prev != active,
+            previous_profile_id: prev,
+            active_profile_id: active,
+        });
         Ok(())
     }
 
@@ -197,6 +206,7 @@ impl DesktopRuntime {
         Self {
             app: AppState::load(store),
             runtime: ProfileRuntime::default(),
+            transition_cell: TransitionCell::new(),
         }
     }
 }
@@ -234,6 +244,7 @@ mod tests {
                 selected_tab: Tab::Dashboard,
             },
             runtime: ProfileRuntime::default(),
+            transition_cell: TransitionCell::new(),
         }
     }
 
