@@ -4,25 +4,63 @@
 
 The production mobile application has **not yet been developed**.
 
-## Current implementation (spike)
+## Current implementation (v0.4 spike)
 
 Current mobile code lives in `spikes/ep-001-discovery-pairing/mobile/`
-for experimentation only — it validates mDNS discovery and WebSocket
-transport. It is **not** the production app.
+for experimentation only — it validates mDNS discovery, WebSocket
+connection, and `active_profile_state` projection reception. It is **not**
+the production app.
+
+### v0.4 topology
+
+```
+Desktop Agent
+    │
+    │ WebSocket server
+    ▼
+  network
+    ▲
+    │ OkHttp WebSocket client
+    │
+Android discovery/pairing spike
+```
+
+Desktop is always the WebSocket server. The Android spike connects to the
+Desktop using OkHttp — it is never a WebSocket server.
+
+### Spike file inventory
 
 ```
 spikes/ep-001-discovery-pairing/mobile/
 ├── app/
 │   └── src/main/java/com/automatdeck/spike/
-│       ├── MainActivity.kt    # Entry point, permissions, UI
-│       ├── MobileAdvertiser   # mDNS advertising (WIP)
-│       └── MobileWsServer.kt  # WebSocket server (WIP)
+│       ├── MainActivity.kt              # Entry point, permissions, UI, WebSocket client
+│       ├── ActiveProfileStateMessage.kt  # Strict v1 projection parser
+│       ├── MdnsDiscoveryProvider.kt     # mDNS discovery of Desktop instances
+│       ├── DiscoveryProvider.kt          # Discovery abstraction
+│       ├── DiscoveryManager.kt          # Discovery coordination
+│       ├── DiscoveredDevice.kt          # Discovered device model
+│       └── DeviceAdapter.kt             # Device list UI adapter
+├── app/src/test/java/com/automatdeck/spike/
+│   └── ActiveProfileStateMessageTest.kt # 18 unit tests
 ├── build.gradle.kts
 └── settings.gradle.kts
 ```
 
-This is experimental code. It will be discarded or rewritten for the
-production app.
+### Current spike capabilities
+
+- **mDNS discovery** — Discovers Desktop instances on the LAN.
+- **WebSocket client** — Connects to Desktop using OkHttp `WebSocketClient`.
+- **`active_profile_state` reception** — Parses the v1 projection payload.
+- **Strict validation** — Rejects unsupported or invalid `schema_version`.
+- **Memory retention** — Retains the latest accepted projection in
+  Activity memory.
+- **No projection persistence** — State is lost on process death.
+- **No context observation or profile resolution** — Desktop is the sole
+  authority.
+
+This spike is disposable. It will be discarded or rewritten for the
+production app. It is **not** the production Android client.
 
 ## Target architecture (EP-005+)
 
