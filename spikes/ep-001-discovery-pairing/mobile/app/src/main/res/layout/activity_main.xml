@@ -79,4 +79,14 @@
         android:text="Waiting..."
         android:typeface="monospace" />
 
+    <LinearLayout
+        android:id="@+id/cssContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="4dp"
+        android:padding="8dp"
+        android:orientation="vertical"
+        android:background="#222" />
+
 </LinearLayout>
