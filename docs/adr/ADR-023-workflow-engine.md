@@ -91,18 +91,35 @@ This follows ADR-001 (Desktop owns configuration) and ADR-008
 pipeline, persistence layer, and reconciliation logic as profiles
 and context rules.
 
-### 6. Validation is pure and Desktop-side only
+### 6. Validation is split into Structural and Execution phases
 
-All workflow validation — structural, referential, version — happens
-on the Desktop before execution is considered. This mirrors the
-validation boundary established for button invocation in ADR-022.
+Validation is divided into two strict phases with a hard boundary:
 
-Validation checks:
-- Workflow exists and is enabled
-- All referenced action_ids exist in ActionRegistry
-- No duplicate workflow IDs
-- WorkflowVersion is supported
+**Structural Validation** operates only on serialized workflow data.
+No I/O, no runtime state, no registry lookups. Can be determined
+entirely from the Document. This phase runs during Sprint 1.
+
+- Workflow ID is non-empty
+- Workflow name is non-empty
 - Workflow has at least one step
+- All step action_ids are non-empty values
+- No duplicate workflow IDs in Document
+- WorkflowVersion is supported
+- Structural correctness (all required fields present)
+
+**Execution Validation** consults runtime services during invocation.
+Runs after structural validation passes and before execution begins.
+This phase runs during Sprint 2.
+
+- Workflow exists in Document at invocation time
+- Workflow is enabled
+- All referenced action_ids exist in ActionRegistry
+- All referenced actions are executable
+
+**Boundary rule:** Structural validation operates only on serialized
+workflow data and must not depend on runtime registries or execution
+infrastructure. This permanently records the separation between the
+domain model and the execution layer.
 
 ### 7. ExecutionTarget unifies dispatch
 
@@ -141,6 +158,8 @@ validators.
 - No Android coupling to workflow internals
 - Desktop remains the sole authority for workflow definition, storage,
   validation, and execution
+- Structural validation is independent of execution infrastructure,
+  making it reusable for import, migration, and editor validation
 - ActionId references are resilient to renaming
 - WorkflowVersion supports future migration without format changes
 - ExecutionTarget provides a stable extension point for future
@@ -167,5 +186,8 @@ validators.
 - WorkflowVersion MUST be present in all stored workflows
 - Android MUST NOT receive workflow definitions, step sequences, or
   execution plans
-- Validation MUST occur before execution
+- Structural validation MUST NOT depend on runtime registries or
+  execution infrastructure
+- Execution validation MUST occur after structural validation passes
+  and before execution begins
 - All referenced actions MUST exist in ActionRegistry at invocation time
