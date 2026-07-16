@@ -185,3 +185,120 @@ Remote Action Engine (5 actions)
 - Additional actions beyond 5 (v0.2+)
 - Macros, plugins, scripting (v0.4+)
 - Multi-device and multi-user support
+
+---
+
+## v0.5 Release
+
+> **Tag:** `v0.5.0`
+> **Branch:** `v0.5` (merged from `feature/v0.5-control-surface`)
+> **Date:** 2026-07-16
+
+### Objective
+
+Replace the legacy `action` message type with a Desktop-authoritative control surface. The Desktop owns the profile model and projects an opaque control surface to connected Mobile clients. Mobile requests invocation by opaque button_id; the Desktop validates and executes.
+
+### Architecture
+
+```
+Mobile                          Desktop
+  │                               │
+  │◄── control_surface_state ─────│  projection (ADR-021)
+  │    (pages, buttons, opaque)   │
+  │                               │
+  │── control_invoke ────────────►│  validation (Sprint 3)
+  │   {button_id}                 │  execute (Sprint 4)
+  │                               │
+  │◄── control_invoke_result ─────│  accepted/rejected + executed/failed
+  │                               │
+```
+
+### Sprint 3 — Validation Transport
+
+- `validate_button()`: pure function resolving button_id against active profile
+- Rejection reasons: `unknown_button`, `no_active_profile`, `ambiguous_button`
+- `control_invoke` handler in agent.rs: transport-only, no execution
+- Android: `ControlInvokeRequest` outbound, `SpikeMessageDispatcher` inbound parsing
+- ADR-022: Opaque Control Invocation protocol decision record
+
+### Sprint 4 — Execution Layer
+
+- `ExecutionOutcome` enum: Success, Failed, ActionNotFound, Timeout, Panicked
+- `execution.rs`: async wrapper — `spawn_blocking` + `tokio::time::timeout(5s)` + `catch_unwind`
+- Extended response schema: `executed` (bool), `execution_error` (string)
+- Android: dispatcher parses `executed`/`execution_error` fields
+- ADR-022 updated with execution semantics, failure taxonomy, compliance rules
+
+### Protocol Additions
+
+| Field | Type | When | Added |
+|-------|------|------|-------|
+| `accepted` | bool | always | Sprint 3 |
+| `reason` | string? | accepted=false | Sprint 3 |
+| `executed` | bool? | accepted=true | Sprint 4 |
+| `execution_error` | string? | accepted=true, executed=false | Sprint 4 |
+
+Execution error codes: `execution_failed`, `action_not_found`, `execution_timeout`, `execution_panicked`
+
+### ADR Updates
+
+- **ADR-021:** Control Surface Projection — Desktop-authoritative projection model
+- **ADR-022:** Opaque Control Invocation — validation boundary, execution semantics, failure taxonomy
+
+### Test Coverage
+
+| Suite | Count | Status |
+|-------|-------|--------|
+| Desktop (Rust) | 225 | ✅ passing |
+| Android (Kotlin) | All | ✅ passing |
+
+Desktop tests span: agent, command, editor, execution, model, observer, pairing, projection, projection_transport, state.
+
+Android tests span: ActiveProfileStateMessage, ControlInvokeRequest, ControlSurfacePresentationMapper, ControlSurfaceStateMessage, SpikeMessageDispatcher (Path A-G).
+
+### Files Changed (v0.5)
+
+**Desktop (Rust):**
+- `src/actions.rs` — ExecutionOutcome enum
+- `src/agent.rs` — control_invoke handler with execution dispatch
+- `src/execution.rs` — async execution wrapper (new)
+- `src/main.rs` — module registration
+- `src/projection.rs` — validate_button(), CSS projection, dedup policy
+- `src/projection_transport.rs` — CSS wire format, serialization
+- `src/state.rs` — runtime state reconciliation
+
+**Android (Kotlin):**
+- `ControlInvokeRequest.kt` — outbound request serialization
+- `ControlSurfacePresentationMapper.kt` — projection to native UI
+- `ControlSurfaceStateMessage.kt` — inbound CSS parsing
+- `SpikeMessageDispatcher.kt` — message routing, result parsing
+- `MainActivity.kt` — diagnostic display
+
+**Documentation:**
+- `docs/adr/ADR-021-control-surface-projection.md`
+- `docs/adr/ADR-022-control-invoke.md`
+- `docs/architecture/v0.5-*.md` — scope, protocol, sequences, failure semantics, test matrix
+- `docs/sprint-4-execution-design.md`
+
+### Known Limitations
+
+- 5s hard timeout on action execution (acceptable for HID/GPIO; revisit for long-running actions)
+- No retry logic (fire-and-forget for OS actions)
+- No rollback (OS actions are irreversible)
+- Execution is single-shot (no action queue or scheduling)
+- `ActionRegistry.execute()` is synchronous (wrapped in spawn_blocking)
+
+### Not in v0.5
+
+- Workflow engine
+- Macro chaining
+- Triggers
+- Scheduler
+- Context automation
+- Multi-device execution
+- Plugin system
+- Undo/rollback
+- Retry logic
+- Execution history
+- Action queue
+- Analytics
