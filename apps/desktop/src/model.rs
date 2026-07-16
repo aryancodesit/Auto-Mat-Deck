@@ -180,6 +180,26 @@ pub struct Workflow {
     pub enabled: bool,
 }
 
+/// Result of executing a single workflow step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepResult {
+    pub step_index: usize,
+    pub action_id: ActionId,
+    pub executed: bool,
+    pub error: Option<String>,
+}
+
+/// Result of executing an entire workflow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowExecutionResult {
+    pub workflow_id: WorkflowId,
+    pub accepted: bool,
+    pub reason: Option<String>,
+    pub executed: bool,
+    pub steps: Vec<StepResult>,
+    pub execution_error: Option<String>,
+}
+
 // ── Context domain types ─────────────────────────────────────
 
 /// A process-to-Profile mapping.
