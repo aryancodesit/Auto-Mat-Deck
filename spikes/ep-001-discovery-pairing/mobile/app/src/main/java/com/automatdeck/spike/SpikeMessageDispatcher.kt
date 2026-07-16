@@ -12,11 +12,20 @@ sealed interface ControlSurfaceUiState {
     ) : ControlSurfaceUiState
 }
 
+data class ControlInvokeResult(
+    val buttonId: String,
+    val accepted: Boolean,
+    val reason: String?,
+)
+
 class SpikeMessageDispatcher {
     var uiState: ControlSurfaceUiState = ControlSurfaceUiState.NoProjection
         private set
 
     var lastRaw: ControlSurfaceStateMessage? = null
+        private set
+
+    var lastInvokeResult: ControlInvokeResult? = null
         private set
 
     fun handle(text: String) {
@@ -25,6 +34,7 @@ class SpikeMessageDispatcher {
         when (msgType) {
             "active_profile_state" -> handleActiveProfileState(json)
             "control_surface_state" -> handleControlSurfaceState(json)
+            "control_invoke_result" -> handleControlInvokeResult(json)
         }
     }
 
@@ -62,5 +72,14 @@ class SpikeMessageDispatcher {
     fun reset() {
         uiState = ControlSurfaceUiState.NoProjection
         lastRaw = null
+        lastInvokeResult = null
+    }
+
+    private fun handleControlInvokeResult(json: JSONObject) {
+        lastInvokeResult = ControlInvokeResult(
+            buttonId = json.optString("button_id", ""),
+            accepted = json.optBoolean("accepted", false),
+            reason = if (json.has("reason")) json.getString("reason") else null,
+        )
     }
 }

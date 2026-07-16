@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::actions::ActionRegistry;
 use crate::pairing::{SharedPairingManager, ValidationResult, validation_reason_code};
 use crate::repository::DocumentStore;
+use crate::projection::{RejectionReason, validate_button};
 use crate::state::SharedRuntime;
 
 use futures_util::{SinkExt, StreamExt};
@@ -532,12 +533,69 @@ async fn handle_connection(
                             if let Err(e) = write.send(Message::Text(resp.to_string().into())).await
                             {
                                 warn!("Failed to send action result to {}: {}", peer, e);
-                                break;
+                            break;
+                        }
+                    }
+
+                    "control_invoke" => {
+                        let button_id = req
+                            .get("button_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        let (accepted, reason) = if !projection_active {
+                            (false, Some("no_active_profile"))
+                        } else {
+                            let (active_pid, profiles) = {
+                                let rt = shared.lock().unwrap();
+                                (
+                                    rt.runtime.active_profile_id.clone(),
+                                    rt.app.document.profiles.clone(),
+                                )
+                            };
+                            // ponytail: clone profiles out, release lock before .await
+                            match validate_button(active_pid.as_ref(), &profiles, button_id) {
+                                Ok(_) => (true, None),
+                                Err(RejectionReason::NoActiveProfile) => {
+                                    (false, Some("no_active_profile"))
+                                }
+                                Err(RejectionReason::UnknownButton) => {
+                                    (false, Some("unknown_button"))
+                                }
+                                Err(RejectionReason::AmbiguousButton) => {
+                                    (false, Some("ambiguous_button"))
+                                }
                             }
+                        };
+
+                        let mut resp = json!({
+                            "type": "control_invoke_result",
+                            "schema_version": 1,
+                            "button_id": button_id,
+                            "accepted": accepted,
+                        });
+                        if let Some(r) = reason {
+                            resp["reason"] = json!(r);
                         }
 
-                        _ => {
-                            let resp = json!({"type": "error", "message": format!("Unknown message type: {}", msg_type)});
+                        info!(
+                            "control_invoke from {}: button_id={}, accepted={}",
+                            peer, button_id, accepted
+                        );
+
+                        if let Err(e) =
+                            write.send(Message::Text(resp.to_string().into())).await
+                        {
+                            warn!(
+                                "Failed to send control_invoke_result to {}: {}",
+                                peer, e
+                            );
+                            break;
+                        }
+                    }
+
+                    _ => {
+                        let resp = json!({"type": "error", "message": format!("Unknown message type: {}", msg_type)});
                             let _ = write.send(Message::Text(resp.to_string().into())).await;
                         }
                     }

@@ -1,6 +1,7 @@
 package com.automatdeck.spike
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -414,5 +415,127 @@ class SpikeMessageDispatcherTest {
         d.reset()
         assertTrue(d.uiState is ControlSurfaceUiState.NoProjection)
         assertNull(d.lastRaw)
+    }
+
+    // ── Path F: control_invoke_result ──
+
+    // F1: accepted response parsed correctly
+    @Test
+    fun invoke_result_accepted_parsed() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":true
+        }""")
+        val result = d.lastInvokeResult
+        assertTrue(result != null)
+        assertEquals("wifi", result!!.buttonId)
+        assertTrue(result.accepted)
+        assertNull(result.reason)
+    }
+
+    // F2: rejected response with reason parsed correctly
+    @Test
+    fun invoke_result_rejected_parsed() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":false,
+            "reason":"unknown_button"
+        }""")
+        val result = d.lastInvokeResult
+        assertTrue(result != null)
+        assertFalse(result!!.accepted)
+        assertEquals("unknown_button", result.reason)
+    }
+
+    // F3: no_active_profile rejection
+    @Test
+    fun invoke_result_no_active_profile_parsed() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":false,
+            "reason":"no_active_profile"
+        }""")
+        val result = d.lastInvokeResult
+        assertTrue(result != null)
+        assertEquals("no_active_profile", result!!.reason)
+    }
+
+    // F4: ambiguous_button rejection
+    @Test
+    fun invoke_result_ambiguous_button_parsed() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":false,
+            "reason":"ambiguous_button"
+        }""")
+        val result = d.lastInvokeResult
+        assertTrue(result != null)
+        assertEquals("ambiguous_button", result!!.reason)
+    }
+
+    // F5: control_invoke_result does not mutate ControlSurfaceUiState
+    @Test
+    fun invoke_result_does_not_mutate_ui_state() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_surface_state",
+            "schema_version":1,
+            "profile_id":"p1",
+            "profile_name":"Coding",
+            "pages":[]
+        }""")
+        val stateBefore = d.uiState
+
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":false,
+            "reason":"unknown_button"
+        }""")
+
+        assertTrue(d.uiState === stateBefore)
+    }
+
+    // F6: reset clears lastInvokeResult
+    @Test
+    fun reset_clears_last_invoke_result() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":true
+        }""")
+        assertTrue(d.lastInvokeResult != null)
+        d.reset()
+        assertNull(d.lastInvokeResult)
+    }
+
+    // F7: unrelated message type preserves lastInvokeResult
+    @Test
+    fun unrelated_message_preserves_invoke_result() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":true
+        }""")
+        d.handle("""{"type":"ping","timestamp":1234}""")
+        assertTrue(d.lastInvokeResult != null)
+        assertEquals("wifi", d.lastInvokeResult!!.buttonId)
     }
 }

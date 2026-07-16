@@ -249,6 +249,21 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
 
+                        "control_invoke_result" -> {
+                            dispatcher.handle(text)
+                            val result = dispatcher.lastInvokeResult
+                            Log.i(TAG, "control_invoke_result: button_id=${result?.buttonId}, accepted=${result?.accepted}")
+                            statusText.post {
+                                if (result != null) {
+                                    responseText.text = if (result.accepted) {
+                                        "Invoke accepted: ${result.buttonId}"
+                                    } else {
+                                        "Invoke rejected: ${result.buttonId} — ${result.reason ?: "unknown"}"
+                                    }
+                                }
+                            }
+                        }
+
                         "active_profile_state",
                         "control_surface_state" -> {
                             dispatcher.handle(text)
@@ -356,6 +371,17 @@ class MainActivity : AppCompatActivity() {
         webSocket.send(ping.toString())
     }
 
+    private fun sendControlInvoke(buttonId: String) {
+        val ws = currentWebSocket
+        if (ws == null) {
+            Log.w(TAG, "sendControlInvoke: currentWebSocket is null")
+            return
+        }
+        val invoke = ControlInvokeRequest(buttonId).toJson()
+        Log.i(TAG, "Sending control_invoke: button_id=$buttonId")
+        ws.send(invoke.toString())
+    }
+
     private fun saveTrustedDevice(device: DiscoveredDevice) {
         val prefs = getSharedPreferences("auto_mat_deck", MODE_PRIVATE)
         prefs.edit()
@@ -396,6 +422,7 @@ class MainActivity : AppCompatActivity() {
                         tag = item.buttonId
                         setOnClickListener {
                             Log.i(TAG, "Button pressed: ${item.buttonId} (${item.label})")
+                            sendControlInvoke(item.buttonId)
                         }
                     }
                     cssContainer.addView(b)

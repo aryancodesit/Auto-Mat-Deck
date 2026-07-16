@@ -1,6 +1,6 @@
-use std::sync::{Condvar, Mutex};
+﻿use std::sync::{Condvar, Mutex};
 
-use crate::model::{Profile, ProfileId, RuntimeTransition};
+use crate::model::{Button, Profile, ProfileId, RuntimeTransition};
 
 /// Latest-value synchronization cell.
 /// Bounded O(1) storage for at most one RuntimeTransition.
@@ -233,6 +233,46 @@ impl ControlSurfacePublicationPolicy {
                 }
             },
         }
+    }
+}
+
+/// Outcome of button_id validation against the current active profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionReason {
+    NoActiveProfile,
+    UnknownButton,
+    AmbiguousButton,
+}
+
+/// Pure function: validate a button_id against the current active profile.
+/// Returns Ok(&Button) if exactly one match is found.
+/// No I/O, no transport, no logging, no side effects.
+pub fn validate_button<'a>(
+    active_profile_id: Option<&ProfileId>,
+    profiles: &'a [Profile],
+    button_id: &str,
+) -> Result<&'a Button, RejectionReason> {
+    let pid = match active_profile_id {
+        Some(id) => id,
+        None => return Err(RejectionReason::NoActiveProfile),
+    };
+
+    let profile = match profiles.iter().find(|p| p.id == *pid) {
+        Some(p) => p,
+        None => return Err(RejectionReason::NoActiveProfile),
+    };
+
+    let matches: Vec<&Button> = profile
+        .pages
+        .iter()
+        .flat_map(|page| page.buttons.iter())
+        .filter(|btn| btn.id.as_str() == button_id)
+        .collect();
+
+    match matches.len() {
+        0 => Err(RejectionReason::UnknownButton),
+        1 => Ok(matches[0]),
+        _ => Err(RejectionReason::AmbiguousButton),
     }
 }
 
@@ -815,5 +855,133 @@ mod tests {
         assert!(policy.should_publish(&result));
         let mut policy2 = ControlSurfacePublicationPolicy::new();
         assert!(policy2.should_publish(&result));
+    }
+    // ── validate_button: Path E (ADR-022) ──────────────────────
+
+    fn make_button(button_id: &str) -> crate::model::Button {
+        crate::model::Button {
+            id: ButtonId::from_string(button_id),
+            label: String::new(),
+            action: crate::model::ActionReference {
+                action_name: String::new(),
+                payload: serde_json::Value::Null,
+            },
+        }
+    }
+
+    fn make_page(page_id: &str, buttons: Vec<&str>) -> crate::model::Page {
+        crate::model::Page {
+            id: PageId::from_string(page_id),
+            name: page_id.to_string(),
+            buttons: buttons.into_iter().map(make_button).collect(),
+        }
+    }
+
+    fn make_profile(profile_id: &str, pages: Vec<crate::model::Page>) -> crate::model::Profile {
+        crate::model::Profile {
+            id: ProfileId::from_string(profile_id),
+            name: profile_id.to_string(),
+            pages,
+        }
+    }
+
+    // E1: known button_id -> Ok(Button)
+    #[test]
+    fn v_button_found() {
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        let binding = [p];
+        let r = validate_button(Some(&pid), &binding, "a");
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap().id.as_str(), "a");
+    }
+
+    // E2: unknown button_id -> Err(UnknownButton)
+    #[test]
+    fn v_button_unknown() {
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        let binding = [p];
+        assert_eq!(
+            validate_button(Some(&pid), &binding, "nope"),
+            Err(RejectionReason::UnknownButton)
+        );
+    }
+
+    // E3: no active profile -> Err(NoActiveProfile)
+    #[test]
+    fn v_button_no_active_profile() {
+        assert_eq!(
+            validate_button(None::<&ProfileId>, &[] as &[Profile], "b1"),
+            Err(RejectionReason::NoActiveProfile)
+        );
+    }
+
+    // E4: active_profile_id points to unknown profile -> Err(NoActiveProfile)
+    #[test]
+    fn v_button_absent_profile() {
+        let p = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        assert_eq!(
+            validate_button(Some(&ProfileId::from_string("nope")), &[p], "a"),
+            Err(RejectionReason::NoActiveProfile)
+        );
+    }
+
+    // E5: button_id matches >1 across pages -> Err(AmbiguousButton)
+    #[test]
+    fn v_button_ambiguous() {
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile(
+            "p1",
+            vec![
+                make_page("g1", vec!["dup"]),
+                make_page("g2", vec!["dup"]),
+            ],
+        );
+        let binding = [p];
+        assert_eq!(
+            validate_button(Some(&pid), &binding, "dup"),
+            Err(RejectionReason::AmbiguousButton)
+        );
+    }
+
+    // E6: same button_id on a different profile -> OK
+    #[test]
+    fn v_button_different_profile_not_ambiguous() {
+        let pid1 = ProfileId::from_string("p1");
+        let p1 = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        let p2 = make_profile("p2", vec![make_page("g1", vec!["a"])]);
+        let binding = [p1, p2];
+        assert!(validate_button(Some(&pid1), &binding, "a").is_ok());
+    }
+
+    // E7: button identity preserved through validate_button
+    #[test]
+    fn v_button_returns_correct_button() {
+        let the_one = make_button("the-one");
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile("p1", vec![crate::model::Page {
+            id: PageId::from_string("g1"),
+            name: "G1".into(),
+            buttons: vec![the_one, make_button("other")],
+        }]);
+        let binding = [p];
+        let r = validate_button(Some(&pid), &binding, "the-one").unwrap();
+        assert_eq!(r.action.action_name, "");
+    }
+
+    // E8: long-lived borrowed reference
+    #[test]
+    fn v_button_long_lived_ref() {
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        let binding = [p];
+        let entry = validate_button(Some(&pid), &binding, "a").unwrap();
+        assert_eq!(entry.id.as_str(), "a");
+        let pid2 = ProfileId::from_string("p2");
+        let p2 = make_profile("p2", vec![make_page("g1", vec!["x"])]);
+        let binding2 = [p2];
+        let _r2 = validate_button(Some(&pid2), &binding2, "ms");
+        assert_eq!(entry.id.as_str(), "a");
     }
 }
