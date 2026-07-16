@@ -16,6 +16,8 @@ data class ControlInvokeResult(
     val buttonId: String,
     val accepted: Boolean,
     val reason: String?,
+    val executed: Boolean?,
+    val executionError: String?,
 )
 
 class SpikeMessageDispatcher {
@@ -80,6 +82,8 @@ class SpikeMessageDispatcher {
             buttonId = json.optString("button_id", ""),
             accepted = json.optBoolean("accepted", false),
             reason = if (json.has("reason")) json.getString("reason") else null,
+            executed = if (json.has("executed")) json.getBoolean("executed") else null,
+            executionError = if (json.has("execution_error")) json.getString("execution_error") else null,
         )
     }
 }

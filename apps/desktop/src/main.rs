@@ -5,6 +5,7 @@ mod agent;
 mod command;
 mod discovery;
 mod editor;
+mod execution;
 mod gui;
 mod model;
 mod observer;

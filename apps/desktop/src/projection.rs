@@ -1,4 +1,4 @@
-﻿use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex};
 
 use crate::model::{Button, Profile, ProfileId, RuntimeTransition};
 
@@ -933,10 +933,7 @@ mod tests {
         let pid = ProfileId::from_string("p1");
         let p = make_profile(
             "p1",
-            vec![
-                make_page("g1", vec!["dup"]),
-                make_page("g2", vec!["dup"]),
-            ],
+            vec![make_page("g1", vec!["dup"]), make_page("g2", vec!["dup"])],
         );
         let binding = [p];
         assert_eq!(
@@ -960,11 +957,14 @@ mod tests {
     fn v_button_returns_correct_button() {
         let the_one = make_button("the-one");
         let pid = ProfileId::from_string("p1");
-        let p = make_profile("p1", vec![crate::model::Page {
-            id: PageId::from_string("g1"),
-            name: "G1".into(),
-            buttons: vec![the_one, make_button("other")],
-        }]);
+        let p = make_profile(
+            "p1",
+            vec![crate::model::Page {
+                id: PageId::from_string("g1"),
+                name: "G1".into(),
+                buttons: vec![the_one, make_button("other")],
+            }],
+        );
         let binding = [p];
         let r = validate_button(Some(&pid), &binding, "the-one").unwrap();
         assert_eq!(r.action.action_name, "");

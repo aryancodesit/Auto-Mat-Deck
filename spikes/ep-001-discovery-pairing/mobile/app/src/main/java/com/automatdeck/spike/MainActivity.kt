@@ -252,13 +252,13 @@ class MainActivity : AppCompatActivity() {
                         "control_invoke_result" -> {
                             dispatcher.handle(text)
                             val result = dispatcher.lastInvokeResult
-                            Log.i(TAG, "control_invoke_result: button_id=${result?.buttonId}, accepted=${result?.accepted}")
+                            Log.i(TAG, "control_invoke_result: button_id=${result?.buttonId}, accepted=${result?.accepted}, executed=${result?.executed}")
                             statusText.post {
                                 if (result != null) {
-                                    responseText.text = if (result.accepted) {
-                                        "Invoke accepted: ${result.buttonId}"
-                                    } else {
-                                        "Invoke rejected: ${result.buttonId} — ${result.reason ?: "unknown"}"
+                                    responseText.text = when {
+                                        !result.accepted -> "Invoke rejected: ${result.buttonId} — ${result.reason ?: "unknown"}"
+                                        result.executed == true -> "Invoke accepted: ${result.buttonId} — executed"
+                                        else -> "Invoke accepted: ${result.buttonId} — ${result.executionError ?: "execution_failed"}"
                                     }
                                 }
                             }

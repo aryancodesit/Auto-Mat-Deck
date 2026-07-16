@@ -87,10 +87,46 @@ Sprint 3 stops after validation, returning:
 }
 ```
 
-A later sprint (Sprint 4+) resolves the validated `Button` into an
-`ActionReference` and dispatches execution. The validation function returns
-`Result<&Button, RejectionReason>` specifically to avoid a second lookup
-when execution is added.
+Sprint 4 adds execution semantics. When `accepted=true`, the Desktop
+resolves the `Button.action` into an `ActionReference` and dispatches
+execution via the `ActionRegistry`. The response extends with two fields:
+
+```json
+{
+  "type": "control_invoke_result",
+  "schema_version": 1,
+  "button_id": "opaque-button-id",
+  "accepted": true,
+  "executed": true
+}
+```
+
+On execution failure:
+
+```json
+{
+  "type": "control_invoke_result",
+  "schema_version": 1,
+  "button_id": "opaque-button-id",
+  "accepted": true,
+  "executed": false,
+  "execution_error": "execution_timeout"
+}
+```
+
+| Execution error | Meaning |
+|---|---|
+| `execution_failed` | Action returned an error |
+| `action_not_found` | Button references an unknown action name |
+| `execution_timeout` | Action exceeded 5s timeout |
+| `execution_panicked` | Action panicked (caught via `catch_unwind`) |
+
+`executed` and `execution_error` are absent when `accepted=false`.
+`execution_error` is absent when `executed=true`.
+
+The `ActionRegistry.execute()` is synchronous. Execution is wrapped in
+`spawn_blocking` + `tokio::time::timeout(5s)` to avoid blocking the async
+runtime and to enforce a hard timeout.
 
 ### 6. Validation is pure and transport-independent
 
@@ -127,12 +163,13 @@ addition.
 
 ### Positive
 
-- Clean separation of validation (Sprint 3) from execution (Sprint 4+).
-- `validate_button()` can be reused verbatim when execution is added.
+- Clean separation of validation (Sprint 3) from execution (Sprint 4).
+- `validate_button()` is reused verbatim — no changes needed for execution.
 - Deterministic rejection rules with no hidden first-match-wins semantics.
 - No Mobile awareness of Desktop-owned context (action names, payloads).
 - `Ok(&Button)` is explicitly scoped to structural resolution, not execution.
 - Unknown-field-extensibility ensures forward compatibility.
+- Timeout and panic handling prevent hung actions from blocking the runtime.
 
 ### Negative
 
@@ -146,8 +183,11 @@ addition.
   `ambiguous_button` becomes unreachable in normal operation. The protocol
   rejection reason is still retained as defense-in-depth; removing it later
   would be a breaking protocol change.
-- Sprint 3 implementers must consciously avoid calling `ACTIONS.execute()`,
+- Sprint 3+4 implementers must consciously avoid calling `ACTIONS.execute()`,
   `shell_execute()`, or the action registry near the validation boundary.
+- The 5s timeout is a hard limit; actions that legitimately take longer
+  (e.g. large file operations) will be killed. This is acceptable for
+  HID/GPIO actions; revisit if longer-running actions are added.
 
 ## Compliance
 
@@ -155,5 +195,11 @@ addition.
   the Desktop's current active control surface.
 - The validation layer MUST NOT execute actions, launch processes, or mutate
   the system.
+- Execution MUST only occur when `accepted=true` and the validated Button
+  has a valid `action` field.
+- Execution MUST be wrapped in `spawn_blocking` + `timeout(5s)` to prevent
+  blocking the async runtime.
+- Panics in action execution MUST be caught via `catch_unwind` and reported
+  as `execution_panicked`.
 - The Mobile client MUST NOT add profile_id or page_id to the request frame.
 - Validation MUST NOT depend on cached or historical projection state.

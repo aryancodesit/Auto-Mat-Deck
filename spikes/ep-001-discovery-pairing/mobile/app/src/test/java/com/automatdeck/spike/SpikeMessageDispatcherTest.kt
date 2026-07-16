@@ -532,10 +532,82 @@ class SpikeMessageDispatcherTest {
             "type":"control_invoke_result",
             "schema_version":1,
             "button_id":"wifi",
-            "accepted":true
+            "accepted":true,
+            "executed":true
         }""")
         d.handle("""{"type":"ping","timestamp":1234}""")
         assertTrue(d.lastInvokeResult != null)
         assertEquals("wifi", d.lastInvokeResult!!.buttonId)
+    }
+
+    // Path G: Sprint 4 — accepted with executed=true
+    @Test
+    fun invoke_result_accepted_executed() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":true,
+            "executed":true
+        }""")
+        val r = d.lastInvokeResult!!
+        assertTrue(r.accepted)
+        assertTrue(r.executed!!)
+        assertNull(r.reason)
+        assertNull(r.executionError)
+    }
+
+    // Path G: Sprint 4 — accepted but execution failed
+    @Test
+    fun invoke_result_accepted_execution_failed() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":true,
+            "executed":false,
+            "execution_error":"execution_timeout"
+        }""")
+        val r = d.lastInvokeResult!!
+        assertTrue(r.accepted)
+        assertEquals(false, r.executed)
+        assertEquals("execution_timeout", r.executionError)
+        assertNull(r.reason)
+    }
+
+    // Path G: Sprint 4 — rejected (no executed/execution_error)
+    @Test
+    fun invoke_result_rejected_no_execution_fields() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":false,
+            "reason":"no_active_profile"
+        }""")
+        val r = d.lastInvokeResult!!
+        assertFalse(r.accepted)
+        assertNull(r.executed)
+        assertNull(r.executionError)
+        assertEquals("no_active_profile", r.reason)
+    }
+
+    // Path G: Sprint 4 — reset clears execution fields too
+    @Test
+    fun reset_clears_execution_fields() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":true,
+            "executed":true
+        }""")
+        assertTrue(d.lastInvokeResult?.executed != null)
+        d.reset()
+        assertNull(d.lastInvokeResult)
     }
 }

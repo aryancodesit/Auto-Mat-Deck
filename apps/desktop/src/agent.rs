@@ -3,9 +3,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use crate::actions::ActionRegistry;
+use crate::actions::ExecutionOutcome;
+use crate::execution;
 use crate::pairing::{SharedPairingManager, ValidationResult, validation_reason_code};
-use crate::repository::DocumentStore;
 use crate::projection::{RejectionReason, validate_button};
+use crate::repository::DocumentStore;
 use crate::state::SharedRuntime;
 
 use futures_util::{SinkExt, StreamExt};
@@ -533,69 +535,104 @@ async fn handle_connection(
                             if let Err(e) = write.send(Message::Text(resp.to_string().into())).await
                             {
                                 warn!("Failed to send action result to {}: {}", peer, e);
-                            break;
+                                break;
+                            }
                         }
-                    }
 
-                    "control_invoke" => {
-                        let button_id = req
-                            .get("button_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        "control_invoke" => {
+                            let button_id =
+                                req.get("button_id").and_then(|v| v.as_str()).unwrap_or("");
 
-                        let (accepted, reason) = if !projection_active {
-                            (false, Some("no_active_profile"))
-                        } else {
-                            let (active_pid, profiles) = {
+                            // Clone runtime state, release lock immediately
+                            let (active_pid, profiles) = if projection_active {
                                 let rt = shared.lock().unwrap();
                                 (
                                     rt.runtime.active_profile_id.clone(),
                                     rt.app.document.profiles.clone(),
                                 )
+                            } else {
+                                (None, Vec::new())
                             };
-                            // ponytail: clone profiles out, release lock before .await
-                            match validate_button(active_pid.as_ref(), &profiles, button_id) {
-                                Ok(_) => (true, None),
+
+                            // Validate: pure, no lock, no .await
+                            let validation = if projection_active {
+                                validate_button(active_pid.as_ref(), &profiles, button_id)
+                            } else {
+                                Err(RejectionReason::NoActiveProfile)
+                            };
+
+                            // Execute: extract owned action data, then async execution
+                            let (accepted, executed, reason, execution_error) = match validation {
+                                Ok(button) => {
+                                    let action_name = button.action.action_name.clone();
+                                    let payload = button.action.payload.clone();
+                                    // ponytail: profiles no longer needed; borrow consumed by clone
+                                    match execution::execute_action(action_name, payload).await {
+                                        ExecutionOutcome::Success => (true, Some(true), None, None),
+                                        ExecutionOutcome::Failed(msg) => {
+                                            (true, Some(false), None, Some(msg))
+                                        }
+                                        ExecutionOutcome::ActionNotFound => (
+                                            true,
+                                            Some(false),
+                                            None,
+                                            Some("action_not_found".into()),
+                                        ),
+                                        ExecutionOutcome::Timeout => (
+                                            true,
+                                            Some(false),
+                                            None,
+                                            Some("execution_timeout".into()),
+                                        ),
+                                        ExecutionOutcome::Panicked => (
+                                            true,
+                                            Some(false),
+                                            None,
+                                            Some("execution_panicked".into()),
+                                        ),
+                                    }
+                                }
                                 Err(RejectionReason::NoActiveProfile) => {
-                                    (false, Some("no_active_profile"))
+                                    (false, None, Some("no_active_profile"), None)
                                 }
                                 Err(RejectionReason::UnknownButton) => {
-                                    (false, Some("unknown_button"))
+                                    (false, None, Some("unknown_button"), None)
                                 }
                                 Err(RejectionReason::AmbiguousButton) => {
-                                    (false, Some("ambiguous_button"))
+                                    (false, None, Some("ambiguous_button"), None)
                                 }
+                            };
+
+                            let mut resp = json!({
+                                "type": "control_invoke_result",
+                                "schema_version": 1,
+                                "button_id": button_id,
+                                "accepted": accepted,
+                            });
+                            if let Some(r) = reason {
+                                resp["reason"] = json!(r);
                             }
-                        };
+                            if let Some(e) = executed {
+                                resp["executed"] = json!(e);
+                            }
+                            if let Some(e) = execution_error {
+                                resp["execution_error"] = json!(e);
+                            }
 
-                        let mut resp = json!({
-                            "type": "control_invoke_result",
-                            "schema_version": 1,
-                            "button_id": button_id,
-                            "accepted": accepted,
-                        });
-                        if let Some(r) = reason {
-                            resp["reason"] = json!(r);
-                        }
-
-                        info!(
-                            "control_invoke from {}: button_id={}, accepted={}",
-                            peer, button_id, accepted
-                        );
-
-                        if let Err(e) =
-                            write.send(Message::Text(resp.to_string().into())).await
-                        {
-                            warn!(
-                                "Failed to send control_invoke_result to {}: {}",
-                                peer, e
+                            info!(
+                                "control_invoke from {}: button_id={}, accepted={}, executed={:?}",
+                                peer, button_id, accepted, executed
                             );
-                            break;
-                        }
-                    }
 
-                    _ => {
-                        let resp = json!({"type": "error", "message": format!("Unknown message type: {}", msg_type)});
+                            if let Err(e) = write.send(Message::Text(resp.to_string().into())).await
+                            {
+                                warn!("Failed to send control_invoke_result to {}: {}", peer, e);
+                                break;
+                            }
+                        }
+
+                        _ => {
+                            let resp = json!({"type": "error", "message": format!("Unknown message type: {}", msg_type)});
                             let _ = write.send(Message::Text(resp.to_string().into())).await;
                         }
                     }
@@ -1055,7 +1092,7 @@ mod tests {
     async fn p2_live_push_after_snapshot() {
         let shared = make_runtime();
         add_trusted_device(&shared, "trusted-device");
-        let pm = make_pairing_manager();
+        let _pm = make_pairing_manager();
         let (tx, _rx) = watch::channel(None);
         tx.send_replace(Some(Arc::from(
             "{\"type\":\"active_profile_state\",\"schema_version\":1,\"active_profile_id\":\"p1\"}",
