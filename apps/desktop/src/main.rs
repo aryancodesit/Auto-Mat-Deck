@@ -15,6 +15,7 @@ mod projection_transport;
 mod repository;
 mod state;
 mod tray;
+mod workflow_validation;
 
 use std::sync::Arc;
 
