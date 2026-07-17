@@ -32,6 +32,9 @@ pub struct WorkflowId(String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActionId(String);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TriggerId(String);
+
 macro_rules! impl_id {
     ($name:ident) => {
         impl $name {
@@ -60,6 +63,7 @@ impl_id!(DeviceId);
 impl_id!(ContextRuleId);
 impl_id!(WorkflowId);
 impl_id!(ActionId);
+impl_id!(TriggerId);
 
 // ── Domain types ─────────────────────────────────────────────
 
@@ -75,6 +79,8 @@ pub struct Document {
     pub context_rules: Vec<ContextRule>,
     #[serde(default)]
     pub workflows: Vec<Workflow>,
+    #[serde(default)]
+    pub triggers: Vec<Trigger>,
 }
 
 impl Document {
@@ -87,6 +93,7 @@ impl Document {
             profiles: vec![Profile::default()],
             context_rules: Vec::new(),
             workflows: Vec::new(),
+            triggers: Vec::new(),
         }
     }
 }
@@ -198,6 +205,38 @@ pub struct WorkflowExecutionResult {
     pub executed: bool,
     pub steps: Vec<StepResult>,
     pub execution_error: Option<String>,
+}
+
+// ── Trigger domain types ────────────────────────────────────
+
+/// Trigger schema version. Currently always 1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerVersion(pub u16);
+
+impl TriggerVersion {
+    pub const V1: TriggerVersion = TriggerVersion(1);
+}
+
+/// What event fires this trigger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum TriggerType {
+    Manual,
+    Time { schedule: String },
+    DesktopStartup,
+    ProcessLaunch { process_name: String },
+}
+
+/// An event-to-workflow binding, persisted in Document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Trigger {
+    pub id: TriggerId,
+    pub name: String,
+    pub version: TriggerVersion,
+    #[serde(flatten)]
+    pub trigger_type: TriggerType,
+    pub workflow_id: WorkflowId,
+    pub enabled: bool,
 }
 
 // ── Context domain types ─────────────────────────────────────
