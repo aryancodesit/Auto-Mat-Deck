@@ -15,6 +15,7 @@ mod projection_transport;
 mod repository;
 mod state;
 mod tray;
+mod trigger_dispatch;
 mod trigger_execution;
 mod trigger_validation;
 mod workflow_validation;
@@ -101,6 +102,8 @@ fn main() -> eframe::Result<()> {
     let observer_handle = std::thread::Builder::new()
         .name("context-observer".into())
         .spawn(move || {
+            let dispatcher = trigger_dispatch::TriggerDispatcher::new();
+            let mut last_context: Option<String> = None;
             std::thread::sleep(std::time::Duration::from_millis(200));
             loop {
                 let shutdown = match shutdown_rx_for_observer.has_changed() {
@@ -113,16 +116,58 @@ fn main() -> eframe::Result<()> {
                 }
                 let observation = observer::ForegroundObserver::current_context();
                 if let Some(snapshot) = observer::successful_observation(observation) {
-                    let transition = {
+                    let process_name = snapshot.as_ref().map(|s| s.foreground_process.clone());
+                    let (transition, trigger_results, workflows_clone) = {
                         let mut guard = obs_rt.lock().unwrap();
-                        guard.apply_context_observation(snapshot)
+                        let results = trigger_execution::evaluate_context_change(
+                            process_name.as_deref().unwrap_or(""),
+                            last_context.as_deref(),
+                            &guard.app.document.triggers,
+                        );
+                        let wfs = guard.app.document.workflows.clone();
+                        let transition = guard.apply_context_observation(snapshot);
+                        (transition, results, wfs)
                     };
+                    if process_name.is_some() {
+                        last_context = process_name;
+                    }
+                    dispatcher.dispatch(&trigger_results, &workflows_clone);
                     cell_for_observer.store(transition);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
         })
         .expect("Failed to spawn observer thread");
+
+    let shutdown_rx_for_timer = shutdown_rx_from_main.clone();
+    let shared_for_timer = shared_runtime.clone();
+    let timer_handle = std::thread::Builder::new()
+        .name("trigger-timer".into())
+        .spawn(move || {
+            let dispatcher = trigger_dispatch::TriggerDispatcher::new();
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            loop {
+                let shutdown = match shutdown_rx_for_timer.has_changed() {
+                    Ok(true) => *shutdown_rx_for_timer.borrow(),
+                    Ok(false) => false,
+                    Err(_) => true,
+                };
+                if shutdown {
+                    break;
+                }
+                let (triggers, workflows) = {
+                    let guard = shared_for_timer.lock().unwrap();
+                    (
+                        guard.app.document.triggers.clone(),
+                        guard.app.document.workflows.clone(),
+                    )
+                };
+                let results = trigger_execution::evaluate_time_triggers(&triggers);
+                dispatcher.dispatch(&results, &workflows);
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        })
+        .expect("Failed to spawn trigger timer thread");
 
     let cell_for_projection = observation_cell.clone();
     let shutdown_rx_for_projection = shutdown_rx_from_main.clone();
@@ -215,6 +260,7 @@ fn main() -> eframe::Result<()> {
     let _ = projection_handle.join();
     #[cfg(windows)]
     let _ = observer_handle.join();
+    let _ = timer_handle.join();
     let _ = tray_handle.join();
     info!("Goodbye.");
 

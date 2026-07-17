@@ -82,6 +82,20 @@ pub fn evaluate_manual_triggers(triggers: &[Trigger]) -> Vec<TriggerEvaluationRe
         .collect()
 }
 
+/// Evaluate Time triggers. Returns all enabled Time triggers.
+/// Called periodically by the timer thread.
+pub fn evaluate_time_triggers(triggers: &[Trigger]) -> Vec<TriggerEvaluationResult> {
+    triggers
+        .iter()
+        .filter(|t| t.enabled && matches!(t.trigger_type, TriggerType::Time { .. }))
+        .map(|t| TriggerEvaluationResult {
+            trigger_id: t.id.as_str().to_owned(),
+            trigger_type: t.trigger_type.clone(),
+            workflow_id: t.workflow_id.clone(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +365,62 @@ mod tests {
         ];
         let results = evaluate_manual_triggers(&triggers);
         assert_eq!(results.len(), 2);
+    }
+
+    // ── evaluate_time_triggers ──
+
+    #[test]
+    fn time_triggers_returned() {
+        let triggers = vec![trigger(
+            "t1",
+            true,
+            TriggerType::Time {
+                schedule: "0 9 * * *".into(),
+            },
+            "wf-1",
+        )];
+        let results = evaluate_time_triggers(&triggers);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].trigger_id, "t1");
+    }
+
+    #[test]
+    fn disabled_time_triggers_not_returned() {
+        let triggers = vec![trigger(
+            "t1",
+            false,
+            TriggerType::Time {
+                schedule: "0 9 * * *".into(),
+            },
+            "wf-1",
+        )];
+        let results = evaluate_time_triggers(&triggers);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn non_time_triggers_not_returned() {
+        let triggers = vec![trigger("t1", true, TriggerType::Manual, "wf-1")];
+        let results = evaluate_time_triggers(&triggers);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn mixed_triggers_only_time_returned() {
+        let triggers = vec![
+            trigger("t1", true, TriggerType::Manual, "wf-1"),
+            trigger(
+                "t2",
+                true,
+                TriggerType::Time {
+                    schedule: "0 9 * * *".into(),
+                },
+                "wf-2",
+            ),
+            trigger("t3", true, TriggerType::DesktopStartup, "wf-3"),
+        ];
+        let results = evaluate_time_triggers(&triggers);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].trigger_id, "t2");
     }
 }
