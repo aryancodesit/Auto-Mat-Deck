@@ -93,17 +93,6 @@ mod tests {
         tx
     }
 
-    fn make_trigger(id: &str, wf: &str) -> crate::model::Trigger {
-        crate::model::Trigger {
-            id: TriggerId::from_string(id),
-            name: format!("Trigger {}", id),
-            version: TriggerVersion::V1,
-            trigger_type: TriggerType::Manual,
-            workflow_id: WorkflowId::from_string(wf),
-            enabled: true,
-        }
-    }
-
     fn make_workflow(id: &str) -> Workflow {
         Workflow {
             id: WorkflowId::from_string(id),

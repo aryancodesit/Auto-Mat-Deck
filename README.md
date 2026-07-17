@@ -2,7 +2,7 @@
 
 **Automated Material Deck** — A local-first platform for creating, managing, and executing automated workflows across mobile and desktop environments.
 
-**Status:** v0.8.0 released — Trigger history and execution log.
+**Status:** v0.8.0 released — Trigger history and execution log. v0.9 planning next.
 
 ## Platform
 
@@ -62,7 +62,7 @@ AUTO_MAT_DECK/
 ```bash
 # Desktop (Rust)
 cd apps/desktop
-cargo test
+cargo test          # single-threaded via .cargo/config.toml (prevents lockscreen crashes)
 cargo clippy
 
 # Android (Kotlin)

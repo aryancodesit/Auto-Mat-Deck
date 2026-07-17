@@ -129,16 +129,6 @@ impl Default for TriggerHistory {
 mod tests {
     use super::*;
 
-    fn make_record(id: &str, wf: &str) -> TriggerExecutionRecord {
-        TriggerExecutionRecord {
-            trigger_id: TriggerId::from_string(id),
-            workflow_id: WorkflowId::from_string(wf),
-            status: TriggerExecutionStatus::Success,
-            timestamp: 1000,
-            duration_ms: 50,
-        }
-    }
-
     #[test]
     fn new_history_is_empty() {
         let h = TriggerHistory::new(10);
