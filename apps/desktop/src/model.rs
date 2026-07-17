@@ -257,6 +257,26 @@ pub struct Trigger {
     pub enabled: bool,
 }
 
+// ── Trigger history types ────────────────────────────────────
+
+/// Status of a trigger execution attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TriggerExecutionStatus {
+    Success,
+    Failed { reason: String },
+    Rejected { reason: String },
+}
+
+/// A single trigger execution record, stored in history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerExecutionRecord {
+    pub trigger_id: TriggerId,
+    pub workflow_id: WorkflowId,
+    pub status: TriggerExecutionStatus,
+    pub timestamp: u64,
+    pub duration_ms: u64,
+}
+
 // ── Context domain types ─────────────────────────────────────
 
 /// A process-to-Profile mapping.

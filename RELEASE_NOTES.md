@@ -677,7 +677,7 @@ All new v0.7 code satisfies Clippy. Remaining warnings originate from pre-existi
 
 - Local timezone scheduling
 - Compound trigger conditions (AND/OR)
-- Trigger history and audit logging
+- Trigger history and audit logging ← addressed in v0.8
 - Android trigger creation/editing
 - Cross-device trigger coordination
 - Conditional workflow execution
@@ -685,3 +685,162 @@ All new v0.7 code satisfies Clippy. Remaining warnings originate from pre-existi
 - Workflow editor
 - Plugin system
 - Undo/rollback
+
+---
+
+## v0.8.0 Release
+
+> **Tag:** `v0.8.0`
+> **Branch:** `v0.7` (continuation)
+> **Date:** 2026-07-17
+> **Status:** RELEASED — Trigger history and execution log.
+
+### Objective
+
+Add trigger history and execution log: bounded ring buffer of trigger execution records, live WebSocket push to connected Android clients, persistence across restarts, and an Android execution log UI. The v0.6 execution layer remains frozen.
+
+### Architecture
+
+```
+Trigger Dispatcher
+    │
+    ├── record() → TriggerHistory (Arc<Mutex<>>)
+    │
+    └── publish() → watch::Sender<Option<String>>
+                          │
+                          ▼
+                    agent.rs select! loop
+                          │
+                          ▼
+                    WebSocket → Android
+                          │
+                          ▼
+                    Execution Log UI
+
+Shutdown: save_to_file("trigger_history.json")
+Startup:  load_from_file("trigger_history.json")
+```
+
+### Sprint Breakdown
+
+| Sprint | Scope |
+|--------|-------|
+| Sprint 1 | TriggerHistory domain type + bounded ring buffer |
+| Sprint 2 | TriggerDispatcher records dispatches with status/timestamp/duration |
+| Sprint 3 | Watch channel push + agent.rs retained snapshot + live updates + Android trigger_history parsing + execution log UI |
+| Sprint 4 | Persistence (save/load to JSON file) |
+
+### Desktop Changes
+
+**New module (trigger_history.rs):**
+- `TriggerHistory` — bounded VecDeque ring buffer (default 100)
+- `record()` — adds entry, evicts oldest at capacity
+- `recent(n)` — newest-first iterator
+- `to_json_recent(n)` — serialized for WebSocket transport
+- `save_to_file()` / `load_from_file()` — JSON persistence
+
+**New types (model.rs):**
+- `TriggerExecutionStatus` — enum: `Success`, `Failed { reason }`, `Rejected { reason }`
+- `TriggerExecutionRecord` — struct: trigger_id, workflow_id, status, timestamp, duration_ms
+
+**Modified (trigger_dispatch.rs):**
+- `TriggerDispatcher` takes `(Arc<Mutex<TriggerHistory>>, watch::Sender<Option<String>>)`
+- Records each dispatch with status, timestamp, duration
+- Publishes serialized history after recording
+
+**Modified (agent.rs):**
+- `handle_connection` takes `trigger_history_rx: watch::Receiver<Option<String>>` (9th param)
+- Sends retained snapshot on trusted connect (all 3 paths)
+- Live updates via select! loop
+
+**Modified (main.rs):**
+- Creates watch channel `(history_tx, history_rx)`
+- Loads history from `trigger_history.json` on startup
+- Saves history on shutdown
+
+### Android Changes
+
+**New files:**
+- `TriggerHistoryMessage.kt` — parses `trigger_history` messages, TriggerHistoryStatus enum, TriggerHistoryRecord data class
+- `TriggerHistoryMessageTest.kt` — 19 tests
+
+**Modified files:**
+- `SpikeMessageDispatcher.kt` — `triggerHistory` property, `handleTriggerHistory()`, reset clears history
+- `MainActivity.kt` — handles `trigger_history` messages, renders execution log section with status icons
+
+### Protocol Additions
+
+| Message | Direction | Purpose |
+|---------|-----------|---------|
+| `trigger_history` | Desktop → Android | Execution log records (retained + live) |
+
+**trigger_history fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | int | Always 1 |
+| `records` | array | Newest-first execution records |
+
+**Record object fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trigger_id` | string | Which trigger fired |
+| `workflow_id` | string | Which workflow was targeted |
+| `status` | string/object | `"Success"` or `{"Failed":{"reason":"..."}}` or `{"Rejected":{"reason":"..."}}` |
+| `timestamp` | int | Unix timestamp (seconds) |
+| `duration_ms` | int | Execution duration in milliseconds |
+
+All existing v0.7 fields unchanged. `schema_version` remains 1.
+
+### ADR Updates
+
+- **ADR-025:** Trigger History — bounded ring buffer, watch channel protocol, persistence, Android execution log
+
+### Test Coverage
+
+| Suite | Count | Status |
+|-------|-------|--------|
+| Desktop (Rust) | 353 | ✅ passing |
+| Android (Kotlin) | 167 | ✅ passing |
+
+Desktop tests span: trigger_history (14), trigger_dispatch (8), execution, trigger_execution (33), trigger_validation (22), agent, command, editor, model, observer, pairing, projection, projection_transport, state.
+
+Android tests span: SpikeMessageDispatcher (76), TriggerHistoryMessage (19), ControlSurfaceStateMessage (28), ActiveProfileStateMessage (18), ControlSurfacePresentationMapper (15), ControlInvokeRequest (5), TriggerStateMessage (19), TriggerInvokeRequest (5).
+
+### Files Changed (v0.8)
+
+**Desktop (Rust):**
+- `src/trigger_history.rs` — TriggerHistory ring buffer with persistence (new)
+- `src/model.rs` — TriggerExecutionStatus, TriggerExecutionRecord
+- `src/trigger_dispatch.rs` — history recording + watch channel publishing
+- `src/agent.rs` — trigger_history_rx in select!, retained snapshot on trusted connect
+- `src/main.rs` — watch channel creation, history load/save
+
+**Android (Kotlin):**
+- `TriggerHistoryMessage.kt` — trigger_history parsing (new)
+- `TriggerHistoryMessageTest.kt` — 19 tests (new)
+- `SpikeMessageDispatcher.kt` — triggerHistory property, handleTriggerHistory()
+- `MainActivity.kt` — execution log rendering
+
+**Documentation:**
+- `docs/adr/ADR-025-trigger-history.md`
+
+### Known Limitations
+
+- History is in-memory + single JSON file (not a database)
+- No history search/filter (linear scan only)
+- No history export or persistence rotation
+- Watch channel sends full history on each update (not incremental)
+- No per-trigger history isolation
+- Persistence only on graceful shutdown (crash loses current session)
+
+### Not in v0.8
+
+- History search and filtering
+- History export (CSV/JSON)
+- Persistence rotation/archival
+- Incremental history updates (delta push)
+- Per-trigger history views
+- History retention policies
+- History analytics/statistics

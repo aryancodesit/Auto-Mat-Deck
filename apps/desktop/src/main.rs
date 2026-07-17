@@ -17,6 +17,7 @@ mod state;
 mod tray;
 mod trigger_dispatch;
 mod trigger_execution;
+mod trigger_history;
 mod trigger_validation;
 mod workflow_validation;
 
@@ -30,6 +31,7 @@ use state::SharedRuntime;
 use crate::pairing::SharedPairingManager;
 use crate::repository::DocumentStore;
 use crate::repository::JsonRepository;
+use crate::trigger_history::TriggerHistory;
 
 fn init_logging(store: &dyn DocumentStore) {
     let log_path = store.data_dir().join("agent.log");
@@ -56,6 +58,7 @@ fn main() -> eframe::Result<()> {
 
     let repo: Arc<dyn DocumentStore> = Arc::new(JsonRepository::new());
     init_logging(&*repo);
+    let data_dir = repo.data_dir().to_path_buf();
 
     let pair_state: PairState = Arc::new(std::sync::Mutex::new(None));
     let pairing_manager: SharedPairingManager = Arc::new(pairing::PairingManager::new());
@@ -74,6 +77,15 @@ fn main() -> eframe::Result<()> {
     let rt_for_server = shared_runtime.clone();
     let repo_for_server = repo.clone();
     let shutdown_rx_for_server = shutdown_rx_from_main.clone();
+
+    let shared_history: Arc<std::sync::Mutex<TriggerHistory>> = {
+        let history_path = data_dir.join("trigger_history.json");
+        Arc::new(std::sync::Mutex::new(TriggerHistory::load_from_file(
+            &history_path,
+            100,
+        )))
+    };
+    let (history_tx, history_rx) = tokio::sync::watch::channel(None::<String>);
     let server_handle = std::thread::Builder::new()
         .name("agent-server".into())
         .spawn(move || {
@@ -86,6 +98,7 @@ fn main() -> eframe::Result<()> {
                 repo_for_server,
                 projection_state_rx,
                 css_state_rx,
+                history_rx,
             ));
         })
         .expect("Failed to spawn server thread");
@@ -99,10 +112,17 @@ fn main() -> eframe::Result<()> {
     #[cfg(windows)]
     let cell_for_observer = observation_cell.clone();
     #[cfg(windows)]
+    let history_for_observer = shared_history.clone();
+    #[cfg(windows)]
+    let history_tx_for_observer = history_tx.clone();
+    #[cfg(windows)]
     let observer_handle = std::thread::Builder::new()
         .name("context-observer".into())
         .spawn(move || {
-            let dispatcher = trigger_dispatch::TriggerDispatcher::new();
+            let dispatcher = trigger_dispatch::TriggerDispatcher::new(
+                history_for_observer,
+                history_tx_for_observer,
+            );
             let mut last_context: Option<String> = None;
             std::thread::sleep(std::time::Duration::from_millis(200));
             loop {
@@ -141,10 +161,13 @@ fn main() -> eframe::Result<()> {
 
     let shutdown_rx_for_timer = shutdown_rx_from_main.clone();
     let shared_for_timer = shared_runtime.clone();
+    let history_for_timer = shared_history.clone();
+    let history_tx_for_timer = history_tx;
     let timer_handle = std::thread::Builder::new()
         .name("trigger-timer".into())
         .spawn(move || {
-            let dispatcher = trigger_dispatch::TriggerDispatcher::new();
+            let dispatcher =
+                trigger_dispatch::TriggerDispatcher::new(history_for_timer, history_tx_for_timer);
             std::thread::sleep(std::time::Duration::from_secs(5));
             loop {
                 let shutdown = match shutdown_rx_for_timer.has_changed() {
@@ -268,6 +291,13 @@ fn main() -> eframe::Result<()> {
     let _ = observer_handle.join();
     let _ = timer_handle.join();
     let _ = tray_handle.join();
+
+    // Persist trigger history to disk
+    if let Ok(h) = shared_history.lock() {
+        let history_path = data_dir.join("trigger_history.json");
+        h.save_to_file(&history_path);
+    }
+
     info!("Goodbye.");
 
     result

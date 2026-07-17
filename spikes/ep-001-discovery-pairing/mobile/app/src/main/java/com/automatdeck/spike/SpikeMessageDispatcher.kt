@@ -52,6 +52,9 @@ class SpikeMessageDispatcher {
     var lastTriggerResult: TriggerInvokeResult? = null
         private set
 
+    var triggerHistory: List<TriggerHistoryRecord> = emptyList()
+        private set
+
     fun handle(text: String) {
         val json = try { JSONObject(text) } catch (_: Exception) { return }
         val msgType = json.optString("type")
@@ -61,6 +64,7 @@ class SpikeMessageDispatcher {
             "control_invoke_result" -> handleControlInvokeResult(json)
             "trigger_state" -> handleTriggerState(json)
             "trigger_invoke_result" -> handleTriggerInvokeResult(json)
+            "trigger_history" -> handleTriggerHistory(json)
         }
     }
 
@@ -101,6 +105,7 @@ class SpikeMessageDispatcher {
         lastInvokeResult = null
         triggers = emptyList()
         lastTriggerResult = null
+        triggerHistory = emptyList()
     }
 
     private fun handleControlInvokeResult(json: JSONObject) {
@@ -144,5 +149,10 @@ class SpikeMessageDispatcher {
             executed = if (json.has("executed")) json.getBoolean("executed") else null,
             executionError = if (json.has("execution_error")) json.getString("execution_error") else null,
         )
+    }
+
+    private fun handleTriggerHistory(json: JSONObject) {
+        val msg = TriggerHistoryMessage.fromJson(json) ?: return
+        triggerHistory = msg.records
     }
 }

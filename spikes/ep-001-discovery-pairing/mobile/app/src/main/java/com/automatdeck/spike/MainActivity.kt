@@ -292,6 +292,12 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
 
+                        "trigger_history" -> {
+                            dispatcher.handle(text)
+                            Log.i(TAG, "Trigger history updated: ${dispatcher.triggerHistory.size} records")
+                            statusText.post { renderUiState() }
+                        }
+
                         else -> {
                             Log.w(TAG, "Unknown message type=$msgType from ${device.name}: $text")
                             statusText.post { responseText.text = text }
@@ -451,6 +457,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         renderTriggerList()
+        renderTriggerHistory()
     }
 
     private fun renderTriggerList() {
@@ -486,6 +493,40 @@ class MainActivity : AppCompatActivity() {
                 }
                 cssContainer.addView(b)
             }
+        }
+    }
+
+    private fun renderTriggerHistory() {
+        val records = dispatcher.triggerHistory
+        if (records.isEmpty()) return
+
+        val header = TextView(this).apply {
+            text = "EXECUTION LOG"
+            textSize = 14f
+            setTextColor(0xFF00BFFF.toInt())
+            setPadding(0, 16, 0, 8)
+        }
+        cssContainer.addView(header)
+
+        for (record in records.take(10)) {
+            val statusIcon = when (record.status) {
+                TriggerHistoryStatus.Success -> "\u2713"
+                TriggerHistoryStatus.Failed -> "\u2717"
+                TriggerHistoryStatus.Rejected -> "\u203B"
+            }
+            val statusColor = when (record.status) {
+                TriggerHistoryStatus.Success -> 0xFF00FF00.toInt()
+                TriggerHistoryStatus.Failed -> 0xFFFF4444.toInt()
+                TriggerHistoryStatus.Rejected -> 0xFFFFAA00.toInt()
+            }
+            val duration = if (record.durationMs > 0) " ${record.durationMs}ms" else ""
+            val label = "$statusIcon ${record.triggerId} ($duration)"
+            val tv = TextView(this).apply {
+                text = label
+                textSize = 11f
+                setTextColor(statusColor)
+            }
+            cssContainer.addView(tv)
         }
     }
 

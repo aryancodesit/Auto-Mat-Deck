@@ -39,6 +39,7 @@ pub async fn run_server(
     store: Arc<dyn DocumentStore>,
     projection_state_rx: watch::Receiver<Option<Arc<str>>>,
     control_surface_state_rx: watch::Receiver<Option<Arc<str>>>,
+    trigger_history_rx: watch::Receiver<Option<String>>,
 ) {
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
@@ -92,7 +93,8 @@ pub async fn run_server(
                             let pm = pairing_manager.clone();
                             let prx = projection_state_rx.clone();
                             let crx = control_surface_state_rx.clone();
-                            tokio::spawn(handle_connection(stream, peer, pair_state.clone(), pm, ss, st, prx, crx));
+                            let hrx = trigger_history_rx.clone();
+                            tokio::spawn(handle_connection(stream, peer, pair_state.clone(), pm, ss, st, prx, crx, hrx));
                     }
                     Err(e) => {
                         error!("[CONNECT] Accept error: {}", e);
@@ -140,6 +142,7 @@ async fn handle_connection(
     store: Arc<dyn DocumentStore>,
     mut projection_rx: watch::Receiver<Option<Arc<str>>>,
     mut control_surface_state_rx: watch::Receiver<Option<Arc<str>>>,
+    mut trigger_history_rx: watch::Receiver<Option<String>>,
 ) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => {
@@ -157,6 +160,7 @@ async fn handle_connection(
     let mut projection_active = false;
     let mut aps_open = true;
     let mut css_open = true;
+    let mut th_open = true;
 
     loop {
         // Before projection is active: only inbound messages.
@@ -198,6 +202,30 @@ async fn handle_connection(
                         Err(_) => {
                             warn!("[CSS] Control surface channel closed for {}", peer);
                             css_open = false;
+                        }
+                    }
+                    continue;
+                }
+                changed = trigger_history_rx.changed(), if th_open => {
+                    match changed {
+                        Ok(()) => {
+                            let snapshot = trigger_history_rx.borrow_and_update().clone();
+                            if let Some(records_json) = snapshot {
+                                let msg = json!({
+                                    "type": "trigger_history",
+                                    "schema_version": 1,
+                                    "records": serde_json::from_str::<Value>(&records_json).unwrap_or(json!([]))
+                                });
+                                let text = Message::Text(msg.to_string().into());
+                                if let Err(e) = write.send(text).await {
+                                    warn!("[TH] Write failed for {}: {}", peer, e);
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            warn!("[TH] Trigger history channel closed for {}", peer);
+                            th_open = false;
                         }
                     }
                     continue;
@@ -264,6 +292,21 @@ async fn handle_connection(
                                         write.send(Message::Text(payload.to_string().into())).await
                                     {
                                         warn!("[CSS] Write failed for {}: {}", peer, e);
+                                        break;
+                                    }
+                                }
+                                // Send retained trigger history
+                                let th_snapshot = trigger_history_rx.borrow_and_update().clone();
+                                if let Some(records_json) = th_snapshot {
+                                    let msg = json!({
+                                        "type": "trigger_history",
+                                        "schema_version": 1,
+                                        "records": serde_json::from_str::<Value>(&records_json).unwrap_or(json!([]))
+                                    });
+                                    if let Err(e) =
+                                        write.send(Message::Text(msg.to_string().into())).await
+                                    {
+                                        warn!("[TH] Write failed for {}: {}", peer, e);
                                         break;
                                     }
                                 }
@@ -357,6 +400,23 @@ async fn handle_connection(
                                                 break;
                                             }
                                         }
+                                        // Send retained trigger history
+                                        let th_snapshot =
+                                            trigger_history_rx.borrow_and_update().clone();
+                                        if let Some(records_json) = th_snapshot {
+                                            let msg = json!({
+                                                "type": "trigger_history",
+                                                "schema_version": 1,
+                                                "records": serde_json::from_str::<Value>(&records_json).unwrap_or(json!([]))
+                                            });
+                                            if let Err(e) = write
+                                                .send(Message::Text(msg.to_string().into()))
+                                                .await
+                                            {
+                                                warn!("[TH] Write failed for {}: {}", peer, e);
+                                                break;
+                                            }
+                                        }
                                         projection_active = true;
                                         continue;
                                     }
@@ -440,6 +500,21 @@ async fn handle_connection(
                                         write.send(Message::Text(payload.to_string().into())).await
                                     {
                                         warn!("[CSS] Write failed for {}: {}", peer, e);
+                                        break;
+                                    }
+                                }
+                                // Send retained trigger history
+                                let th_snapshot = trigger_history_rx.borrow_and_update().clone();
+                                if let Some(records_json) = th_snapshot {
+                                    let msg = json!({
+                                        "type": "trigger_history",
+                                        "schema_version": 1,
+                                        "records": serde_json::from_str::<Value>(&records_json).unwrap_or(json!([]))
+                                    });
+                                    if let Err(e) =
+                                        write.send(Message::Text(msg.to_string().into())).await
+                                    {
+                                        warn!("[TH] Write failed for {}: {}", peer, e);
                                         break;
                                     }
                                 }
@@ -796,6 +871,7 @@ mod tests {
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = projection_tx.subscribe();
         let (_css_tx, css_rx) = watch::channel(None);
+        let (_th_tx, th_rx) = watch::channel(None::<String>);
         let shared_clone = shared.clone();
         let pm = pairing_manager.clone();
         let ps = pair_state.clone();
@@ -812,6 +888,7 @@ mod tests {
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
                 css_rx,
+                th_rx,
             )
             .await;
         });
@@ -1121,6 +1198,7 @@ mod tests {
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = tx.subscribe();
         let (_css_tx, css_rx) = watch::channel(None);
+        let (_th_tx, th_rx) = watch::channel(None::<String>);
 
         let server_handle = tokio::spawn(async move {
             let (tcp_stream, peer) = listener.accept().await.expect("accept");
@@ -1133,6 +1211,7 @@ mod tests {
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
                 css_rx,
+                th_rx,
             )
             .await;
         });
@@ -1308,16 +1387,40 @@ mod tests {
         let rx2 = tx.subscribe();
         let (_css_tx, css_rx1) = watch::channel(None);
         let css_rx2 = css_rx1.clone();
+        let (_th_tx, th_rx1) = watch::channel(None::<String>);
+        let th_rx2 = th_rx1.clone();
         let repo = Arc::new(crate::repository::JsonRepository::new());
         let repo2 = repo.clone();
 
         let h1 = tokio::spawn(async move {
             let (tcp, peer) = l1.accept().await.unwrap();
-            handle_connection(tcp, peer, pair_state1, pm, shared, repo, rx1, css_rx1).await;
+            handle_connection(
+                tcp,
+                peer,
+                pair_state1,
+                pm,
+                shared,
+                repo,
+                rx1,
+                css_rx1,
+                th_rx1,
+            )
+            .await;
         });
         let h2 = tokio::spawn(async move {
             let (tcp, peer) = l2.accept().await.unwrap();
-            handle_connection(tcp, peer, pair_state2, pm2, shared2, repo2, rx2, css_rx2).await;
+            handle_connection(
+                tcp,
+                peer,
+                pair_state2,
+                pm2,
+                shared2,
+                repo2,
+                rx2,
+                css_rx2,
+                th_rx2,
+            )
+            .await;
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1384,6 +1487,7 @@ mod tests {
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = tx.subscribe();
         let (_css_tx, css_rx) = watch::channel(None);
+        let (_th_tx, th_rx) = watch::channel(None::<String>);
 
         let server_handle = tokio::spawn(async move {
             let (tcp_stream, peer) = listener.accept().await.expect("accept");
@@ -1396,6 +1500,7 @@ mod tests {
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
                 css_rx,
+                th_rx,
             )
             .await;
         });
@@ -1460,6 +1565,7 @@ mod tests {
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = aps_tx.subscribe();
         let css_rx = css_rx;
+        let (_th_tx, th_rx) = watch::channel(None::<String>);
 
         let server_handle = tokio::spawn(async move {
             let (tcp_stream, peer) = listener.accept().await.expect("accept");
@@ -1472,6 +1578,7 @@ mod tests {
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
                 css_rx,
+                th_rx,
             )
             .await;
         });
@@ -1534,6 +1641,7 @@ mod tests {
 
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = aps_tx.subscribe();
+        let (_th_tx, th_rx) = watch::channel(None::<String>);
 
         let server_handle = tokio::spawn(async move {
             let (tcp_stream, peer) = listener.accept().await.expect("accept");
@@ -1546,6 +1654,7 @@ mod tests {
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
                 css_rx,
+                th_rx,
             )
             .await;
         });
@@ -1597,6 +1706,7 @@ mod tests {
 
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = aps_tx.subscribe();
+        let (_th_tx, th_rx) = watch::channel(None::<String>);
 
         let server_handle = tokio::spawn(async move {
             let (tcp_stream, peer) = listener.accept().await.expect("accept");
@@ -1609,6 +1719,7 @@ mod tests {
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
                 css_rx,
+                th_rx,
             )
             .await;
         });
@@ -1665,6 +1776,7 @@ mod tests {
 
         let pair_state: PairState = Arc::new(Mutex::new(None));
         let projection_rx = aps_tx.subscribe();
+        let (_th_tx, th_rx) = watch::channel(None::<String>);
 
         let server_handle = tokio::spawn(async move {
             let (tcp_stream, peer) = listener.accept().await.expect("accept");
@@ -1677,6 +1789,7 @@ mod tests {
                 Arc::new(crate::repository::JsonRepository::new()),
                 projection_rx,
                 css_rx,
+                th_rx,
             )
             .await;
         });
