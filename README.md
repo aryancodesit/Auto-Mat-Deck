@@ -2,7 +2,7 @@
 
 **Automated Material Deck** — A local-first platform for creating, managing, and executing automated workflows across mobile and desktop environments.
 
-**Status:** v0.6.0 released — Workflow engine certified, desktop frozen, Android integration complete.
+**Status:** v0.7.0 released — Trigger engine certified, automation foundation complete.
 
 ## Platform
 
@@ -23,6 +23,15 @@ WebSocket Transport (JSON, local-first, no cloud)
     │
     ▼
 agent.rs (coordinator)
+    │
+    ▼
+Trigger Engine
+    ├── evaluate_context_change()
+    ├── evaluate_manual_triggers()
+    └── evaluate_time_triggers()
+    │
+    ▼
+Trigger Dispatcher (sync → async bridge)
     │
     ▼
 ExecutionTarget
@@ -65,6 +74,7 @@ See [AI_CONTEXT.md](./AI_CONTEXT.md) for the complete project guide — architec
 
 | Version | Tag | Status |
 |---------|-----|--------|
+| v0.7.0 | `v0.7.0` | RELEASED — Trigger engine, automation foundation |
 | v0.6.0 | `v0.6.0` | RELEASED — Workflow engine |
 | v0.5.0 | `v0.5.0` | RELEASED — Control surface + execution |
 | v0.1 | `v0.1-ep003-certified` | RELEASED — Discovery, trust, 5 actions |

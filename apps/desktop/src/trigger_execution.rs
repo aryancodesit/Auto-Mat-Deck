@@ -129,7 +129,7 @@ fn field_matches(value: u32, pattern: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    pattern.parse::<u32>().map_or(false, |v| v == value)
+    pattern.parse::<u32>() == Ok(value)
 }
 
 #[cfg(test)]

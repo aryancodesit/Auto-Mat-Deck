@@ -472,3 +472,216 @@ Android tests span: SpikeMessageDispatcher (42), ControlSurfaceStateMessage (28)
 - Workflow editor
 - Button → ExecutionTarget migration
 - Multi-device workflow execution
+
+---
+
+## v0.7.0 Release
+
+> **Tag:** `v0.7.0`
+> **Branch:** `v0.7`
+> **Date:** 2026-07-17
+> **Status:** RELEASED — Trigger engine certified, automation foundation complete.
+
+### Objective
+
+Introduce a trigger engine: autonomous event sources that observe context changes, fire on schedule, or respond to manual invocations, and dispatch to the existing ExecutionTarget pipeline. Android receives trigger state and can invoke manual triggers. The v0.6 execution layer remains frozen and untouched.
+
+### Architecture
+
+```
+Android UI
+    │
+    ▼
+WebSocket Transport
+    │
+    ▼
+Desktop Agent (observer thread)
+    │
+    ▼
+Trigger Engine
+    ├── evaluate_context_change()  (startup, foreground change)
+    ├── evaluate_manual_triggers() (Android manual fire)
+    └── evaluate_time_triggers()   (schedule matching)
+    │
+    ▼
+Trigger Dispatcher (sync → async bridge)
+    │
+    ▼
+ExecutionTarget ──── sole dispatch abstraction (frozen v0.6)
+    │
+    ▼
+execute_target() ─── single entry point (frozen v0.6)
+    ├───────────────┐
+    ▼               ▼
+execute_action()  execute_workflow()
+```
+
+### Key Design Decisions
+
+- **Triggers orchestrate through ExecutionTarget, never execute directly.** Every trigger resolves to an ExecutionTarget and enters the same pipeline as manual invocations.
+- **Trigger.workflow_id references WorkflowId, not ExecutionTarget.** Deliberate schema tradeoff: simpler persistence, zero migration, zero protocol breakage. The target could be generalized in a future version.
+- **Time triggers use UTC SystemTime.** Deterministic and testable. UTC semantics are documented. Local-time alignment is deferred.
+- **No new wire protocol messages for trigger evaluation.** Triggers are Desktop-internal. Android receives trigger state via `trigger_state` and invokes via `trigger_invoke`.
+
+### Sprint Breakdown
+
+| Sprint | Scope | Commit |
+|--------|-------|--------|
+| Sprint 1 | Trigger domain types + structural validation | `9176b4f` |
+| Sprint 2 | Trigger evaluation engine + registry | `ef4d600` |
+| Sprint 3 | Desktop trigger dispatch integration | `b4a6841` |
+| Sprint 4 | ExecutionTarget domain migration + deterministic time scheduling | `5127a2e` |
+| Sprint 5 | Android trigger management | (this commit) |
+
+### Desktop Changes
+
+**New types (model.rs):**
+- `TriggerId`, `TriggerVersion` — typed IDs
+- `TriggerType` — enum: `DesktopStartup`, `ProcessLaunch { process_name }`, `Time { schedule }`, `Manual`
+- `Trigger` — domain struct with id, name, version, trigger_type, workflow_id, enabled
+- `Document.triggers: Vec<Trigger>` — new field, defaults to `[]`
+- `ExecutionTarget` — migrated from execution.rs to model.rs (domain type, re-exported for backward compat)
+
+**New module (trigger_validation.rs):**
+- `validate_structural()` — compile-time checks without runtime dependencies
+- `find_duplicate_trigger_ids()` — duplicate detection
+- `TriggerStructuralError` — error enum with Display
+
+**New module (trigger_execution.rs):**
+- `TriggerRegistry` — lookup-only over `&[Trigger]`
+- `TriggerEvaluationResult` — which trigger fired and why
+- `evaluate_context_change()` — maps context snapshots to triggers
+- `evaluate_manual_triggers()` — returns enabled manual triggers
+- `evaluate_time_triggers()` — schedule matching (minute/hour, `*` wildcard)
+- `schedule_matches()` — deterministic time matching
+- `field_matches()` — single schedule field matcher
+
+**New module (trigger_dispatch.rs):**
+- `TriggerDispatcher` — bridges synchronous observer thread to async ExecutionTarget pipeline
+- Observer thread integration: evaluates triggers on context change, dispatches results
+- Timer thread: evaluates time triggers every 60s using SystemTime
+
+**agent.rs:**
+- `ExecutionTarget` import updated to model.rs (re-export preserved)
+
+### Android Changes
+
+**New files:**
+- `TriggerStateMessage.kt` — parses `trigger_state` messages (schema v1)
+- `TriggerInvokeRequest.kt` — serializes `trigger_invoke` messages
+- `TriggerStateMessageTest.kt` — 19 tests
+- `TriggerInvokeRequestTest.kt` — 5 tests
+
+**Modified files:**
+- `SpikeMessageDispatcher.kt` — handles `trigger_state` + `trigger_invoke_result`, stores trigger list, new `TriggerInvokeResult` data class
+- `MainActivity.kt` — renders trigger list with `[ON]`/`[OFF]` status, fire buttons for manual triggers
+- `SpikeMessageDispatcherTest.kt` — 17 new tests (trigger_state + trigger_invoke_result)
+
+### Protocol Additions
+
+| Message | Direction | Purpose |
+|---------|-----------|---------|
+| `trigger_state` | Desktop → Android | Push trigger list with enabled status |
+| `trigger_invoke` | Android → Desktop | Manual trigger fire |
+| `trigger_invoke_result` | Desktop → Android | Trigger execution result |
+
+**trigger_state fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | int | Always 1 |
+| `triggers` | array | List of trigger objects |
+
+**Trigger object fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trigger_id` | string | Opaque identifier |
+| `name` | string | Display name |
+| `type` | string | `desktop_startup`, `process_launch`, `time`, `manual` |
+| `workflow_id` | string | Target workflow to execute |
+| `enabled` | bool | Whether trigger is active |
+
+All existing v0.6 fields unchanged. `schema_version` remains 1.
+
+### ADR Updates
+
+- **ADR-024:** Trigger Engine — trigger domain, evaluation, dispatch, time scheduling, Android integration
+
+### Test Coverage
+
+| Suite | Count | Status |
+|-------|-------|--------|
+| Desktop (Rust) | 333 | ✅ passing |
+| Android (Kotlin) | ~127 | ✅ passing |
+
+Desktop tests span: execution, trigger_execution (33), trigger_validation (22), trigger_dispatch (3), workflow_validation, agent, command, editor, model, observer, pairing, projection, projection_transport, state.
+
+Android tests span: SpikeMessageDispatcher (59), ControlSurfaceStateMessage (28), ActiveProfileStateMessage (18), ControlSurfacePresentationMapper (15), TriggerStateMessage (19), ControlInvokeRequest (5), TriggerInvokeRequest (5).
+
+All new v0.7 code satisfies Clippy. Remaining warnings originate from pre-existing v0.6 code.
+
+### Certification
+
+| Audit | Verdict |
+|-------|---------|
+| Desktop Architecture | PASS |
+| Android Architecture | PASS |
+| Automation Foundation | PASS |
+| Trigger Domain | PASS |
+| Trigger Validation | PASS |
+| Trigger Registry | PASS |
+| Trigger Evaluation | PASS |
+| Trigger Dispatcher | PASS |
+| Desktop Integration | PASS |
+| Android Trigger Management | PASS |
+| Execution Pipeline Integrity | PASS |
+| Persistence Compatibility | PASS |
+
+### Files Changed (v0.7)
+
+**Desktop (Rust):**
+- `src/model.rs` — TriggerId, TriggerVersion, TriggerType, Trigger, Document.triggers, ExecutionTarget (migrated from execution.rs)
+- `src/trigger_validation.rs` — validate_structural(), find_duplicate_trigger_ids(), TriggerStructuralError (new)
+- `src/trigger_execution.rs` — TriggerRegistry, TriggerEvaluationResult, evaluate_context_change(), evaluate_manual_triggers(), evaluate_time_triggers(), schedule_matches(), field_matches() (new)
+- `src/trigger_dispatch.rs` — TriggerDispatcher, observer thread, timer thread (new)
+- `src/execution.rs` — ExecutionTarget re-exported from model.rs
+- `src/agent.rs` — ExecutionTarget import updated to model
+- `src/main.rs` — observer thread triggers, timer thread
+
+**Android (Kotlin):**
+- `TriggerStateMessage.kt` — trigger_state parsing (new)
+- `TriggerInvokeRequest.kt` — trigger_invoke serialization (new)
+- `SpikeMessageDispatcher.kt` — trigger_state + trigger_invoke_result handling
+- `MainActivity.kt` — trigger list UI, manual fire buttons
+- `SpikeMessageDispatcherTest.kt` — 17 new trigger tests
+- `TriggerStateMessageTest.kt` — 19 tests (new)
+- `TriggerInvokeRequestTest.kt` — 5 tests (new)
+
+**Documentation:**
+- `docs/adr/ADR-024-trigger-engine.md`
+
+### Known Limitations
+
+- Time triggers use UTC SystemTime (not local timezone)
+- Trigger.workflow_id references WorkflowId, not ExecutionTarget (schema simplicity tradeoff)
+- Observer thread polls foreground process on a fixed interval (not event-driven)
+- Timer thread evaluates every 60s (not sub-minute precision)
+- No trigger conditions beyond schedule matching (no compound conditions)
+- No trigger history or audit log
+- No trigger enable/disable from Android (display only)
+- Android cannot create or edit triggers (Desktop-authoritative)
+- No cross-device trigger coordination
+
+### Not in v0.7
+
+- Local timezone scheduling
+- Compound trigger conditions (AND/OR)
+- Trigger history and audit logging
+- Android trigger creation/editing
+- Cross-device trigger coordination
+- Conditional workflow execution
+- Retry policies
+- Workflow editor
+- Plugin system
+- Undo/rollback

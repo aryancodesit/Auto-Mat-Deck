@@ -2,6 +2,7 @@ package com.automatdeck.spike
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -784,5 +785,261 @@ class SpikeMessageDispatcherTest {
         assertEquals(1, d.lastInvokeResult!!.steps.size)
         d.reset()
         assertNull(d.lastInvokeResult)
+    }
+
+    // ── Path I: trigger_state ──
+
+    // I1: valid trigger_state updates triggers
+    @Test
+    fun trigger_state_updates_triggers() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[
+                {"trigger_id":"t1","name":"Morning","type":"time","workflow_id":"wf1","enabled":true},
+                {"trigger_id":"t2","name":"Manual","type":"manual","workflow_id":"wf2","enabled":false}
+            ]
+        }""")
+        assertEquals(2, d.triggers.size)
+        assertEquals("t1", d.triggers[0].triggerId)
+        assertEquals("Morning", d.triggers[0].name)
+        assertTrue(d.triggers[0].enabled)
+        assertEquals("t2", d.triggers[1].triggerId)
+        assertEquals(false, d.triggers[1].enabled)
+    }
+
+    // I2: empty trigger_state clears triggers
+    @Test
+    fun trigger_state_empty_triggers() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[
+                {"trigger_id":"t1","name":"X","type":"time","workflow_id":"wf1","enabled":true}
+            ]
+        }""")
+        assertEquals(1, d.triggers.size)
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[]
+        }""")
+        assertTrue(d.triggers.isEmpty())
+    }
+
+    // I3: malformed trigger_state preserves existing triggers
+    @Test
+    fun malformed_trigger_state_preserves_existing() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[{"trigger_id":"t1","name":"X","type":"time","workflow_id":"wf1","enabled":true}]
+        }""")
+        assertEquals(1, d.triggers.size)
+        d.handle("not json at all")
+        assertEquals(1, d.triggers.size)
+    }
+
+    // I4: trigger_state does not mutate ControlSurfaceUiState
+    @Test
+    fun trigger_state_does_not_mutate_ui_state() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_surface_state",
+            "schema_version":1,
+            "profile_id":"p1",
+            "profile_name":"Coding",
+            "pages":[]
+        }""")
+        val stateBefore = d.uiState
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[{"trigger_id":"t1","name":"X","type":"time","workflow_id":"wf1","enabled":true}]
+        }""")
+        assertTrue(d.uiState === stateBefore)
+    }
+
+    // I5: unrelated message preserves triggers
+    @Test
+    fun unrelated_message_preserves_triggers() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[{"trigger_id":"t1","name":"X","type":"time","workflow_id":"wf1","enabled":true}]
+        }""")
+        d.handle("""{"type":"ping","timestamp":1234}""")
+        assertEquals(1, d.triggers.size)
+    }
+
+    // I6: second trigger_state replaces first
+    @Test
+    fun second_trigger_state_replaces_first() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[{"trigger_id":"t1","name":"First","type":"time","workflow_id":"wf1","enabled":true}]
+        }""")
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[{"trigger_id":"t2","name":"Second","type":"manual","workflow_id":"wf2","enabled":false}]
+        }""")
+        assertEquals(1, d.triggers.size)
+        assertEquals("t2", d.triggers[0].triggerId)
+    }
+
+    // I7: reset clears triggers
+    @Test
+    fun reset_clears_triggers() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[{"trigger_id":"t1","name":"X","type":"time","workflow_id":"wf1","enabled":true}]
+        }""")
+        assertEquals(1, d.triggers.size)
+        d.reset()
+        assertTrue(d.triggers.isEmpty())
+    }
+
+    // I8: initial triggers is empty
+    @Test
+    fun initial_triggers_is_empty() {
+        val d = SpikeMessageDispatcher()
+        assertTrue(d.triggers.isEmpty())
+    }
+
+    // I9: initial lastTriggerResult is null
+    @Test
+    fun initial_last_trigger_result_is_null() {
+        val d = SpikeMessageDispatcher()
+        assertNull(d.lastTriggerResult)
+    }
+
+    // ── Path J: trigger_invoke_result ──
+
+    // J1: accepted trigger result parsed correctly
+    @Test
+    fun trigger_invoke_result_accepted() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_invoke_result",
+            "trigger_id":"t1",
+            "accepted":true,
+            "executed":true
+        }""")
+        val r = d.lastTriggerResult
+        assertNotNull(r)
+        assertEquals("t1", r!!.triggerId)
+        assertTrue(r.accepted)
+        assertTrue(r.executed!!)
+    }
+
+    // J2: rejected trigger result parsed correctly
+    @Test
+    fun trigger_invoke_result_rejected() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_invoke_result",
+            "trigger_id":"t1",
+            "accepted":false,
+            "reason":"trigger_disabled"
+        }""")
+        val r = d.lastTriggerResult
+        assertNotNull(r)
+        assertFalse(r!!.accepted)
+        assertEquals("trigger_disabled", r.reason)
+    }
+
+    // J3: trigger result with execution error
+    @Test
+    fun trigger_invoke_result_execution_error() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_invoke_result",
+            "trigger_id":"t1",
+            "accepted":true,
+            "executed":false,
+            "execution_error":"workflow_not_found"
+        }""")
+        val r = d.lastTriggerResult
+        assertNotNull(r)
+        assertTrue(r!!.accepted)
+        assertFalse(r.executed!!)
+        assertEquals("workflow_not_found", r.executionError)
+    }
+
+    // J4: trigger_invoke_result does not mutate UI state
+    @Test
+    fun trigger_invoke_result_does_not_mutate_ui_state() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_surface_state",
+            "schema_version":1,
+            "profile_id":"p1",
+            "profile_name":"Coding",
+            "pages":[]
+        }""")
+        val stateBefore = d.uiState
+        d.handle("""{
+            "type":"trigger_invoke_result",
+            "trigger_id":"t1",
+            "accepted":true,
+            "executed":true
+        }""")
+        assertTrue(d.uiState === stateBefore)
+    }
+
+    // J5: trigger_invoke_result does not mutate triggers
+    @Test
+    fun trigger_invoke_result_does_not_mutate_triggers() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_state",
+            "schema_version":1,
+            "triggers":[{"trigger_id":"t1","name":"X","type":"time","workflow_id":"wf1","enabled":true}]
+        }""")
+        assertEquals(1, d.triggers.size)
+        d.handle("""{
+            "type":"trigger_invoke_result",
+            "trigger_id":"t1",
+            "accepted":true,
+            "executed":true
+        }""")
+        assertEquals(1, d.triggers.size)
+    }
+
+    // J6: reset clears lastTriggerResult
+    @Test
+    fun reset_clears_last_trigger_result() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_invoke_result",
+            "trigger_id":"t1",
+            "accepted":true,
+            "executed":true
+        }""")
+        assertNotNull(d.lastTriggerResult)
+        d.reset()
+        assertNull(d.lastTriggerResult)
+    }
+
+    // J7: empty trigger_id rejected
+    @Test
+    fun trigger_invoke_result_empty_id_rejected() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"trigger_invoke_result",
+            "trigger_id":"",
+            "accepted":true,
+            "executed":true
+        }""")
+        assertNull(d.lastTriggerResult)
     }
 }

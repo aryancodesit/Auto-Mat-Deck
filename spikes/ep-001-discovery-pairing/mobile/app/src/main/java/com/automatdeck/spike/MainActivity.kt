@@ -271,6 +271,27 @@ class MainActivity : AppCompatActivity() {
                             statusText.post { renderUiState() }
                         }
 
+                        "trigger_state" -> {
+                            dispatcher.handle(text)
+                            Log.i(TAG, "Trigger state updated: ${dispatcher.triggers.size} triggers")
+                            statusText.post { renderUiState() }
+                        }
+
+                        "trigger_invoke_result" -> {
+                            dispatcher.handle(text)
+                            val result = dispatcher.lastTriggerResult
+                            Log.i(TAG, "trigger_invoke_result: trigger_id=${result?.triggerId}, accepted=${result?.accepted}")
+                            statusText.post {
+                                if (result != null) {
+                                    responseText.text = when {
+                                        !result.accepted -> "Trigger rejected: ${result.triggerId} — ${result.reason ?: "unknown"}"
+                                        result.executed == true -> "Trigger executed: ${result.triggerId}"
+                                        else -> "Trigger accepted: ${result.triggerId} — ${result.executionError ?: "unknown"}"
+                                    }
+                                }
+                            }
+                        }
+
                         else -> {
                             Log.w(TAG, "Unknown message type=$msgType from ${device.name}: $text")
                             statusText.post { responseText.text = text }
@@ -429,6 +450,54 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        renderTriggerList()
+    }
+
+    private fun renderTriggerList() {
+        val triggers = dispatcher.triggers
+        if (triggers.isEmpty()) return
+
+        val header = TextView(this).apply {
+            text = "TRIGGERS"
+            textSize = 14f
+            setTextColor(0xFF00FF00.toInt())
+            setPadding(0, 16, 0, 8)
+        }
+        cssContainer.addView(header)
+
+        for (trigger in triggers) {
+            val status = if (trigger.enabled) "[ON]" else "[OFF]"
+            val label = "$status ${trigger.name} (${trigger.type})"
+            val tv = TextView(this).apply {
+                text = label
+                textSize = 12f
+                setTextColor(0xFFCCCCCC.toInt())
+            }
+            cssContainer.addView(tv)
+
+            if (trigger.type == "manual" && trigger.enabled) {
+                val b = Button(this).apply {
+                    text = "Fire: ${trigger.name}"
+                    tag = trigger.triggerId
+                    setOnClickListener {
+                        Log.i(TAG, "Trigger fired: ${trigger.triggerId} (${trigger.name})")
+                        sendTriggerInvoke(trigger.triggerId, trigger.workflowId)
+                    }
+                }
+                cssContainer.addView(b)
+            }
+        }
+    }
+
+    private fun sendTriggerInvoke(triggerId: String, workflowId: String) {
+        val ws = currentWebSocket
+        if (ws == null) {
+            Log.w(TAG, "sendTriggerInvoke: currentWebSocket is null")
+            return
+        }
+        val invoke = TriggerInvokeRequest(triggerId, workflowId).toJson()
+        Log.i(TAG, "Sending trigger_invoke: trigger_id=$triggerId, workflow_id=$workflowId")
+        ws.send(invoke.toString())
     }
 
     override fun onDestroy() {

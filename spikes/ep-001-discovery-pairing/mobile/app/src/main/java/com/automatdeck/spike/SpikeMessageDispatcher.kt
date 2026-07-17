@@ -28,6 +28,14 @@ data class ControlInvokeResult(
     val steps: List<StepResult>,
 )
 
+data class TriggerInvokeResult(
+    val triggerId: String,
+    val accepted: Boolean,
+    val reason: String?,
+    val executed: Boolean?,
+    val executionError: String?,
+)
+
 class SpikeMessageDispatcher {
     var uiState: ControlSurfaceUiState = ControlSurfaceUiState.NoProjection
         private set
@@ -38,6 +46,12 @@ class SpikeMessageDispatcher {
     var lastInvokeResult: ControlInvokeResult? = null
         private set
 
+    var triggers: List<TriggerMessage> = emptyList()
+        private set
+
+    var lastTriggerResult: TriggerInvokeResult? = null
+        private set
+
     fun handle(text: String) {
         val json = try { JSONObject(text) } catch (_: Exception) { return }
         val msgType = json.optString("type")
@@ -45,6 +59,8 @@ class SpikeMessageDispatcher {
             "active_profile_state" -> handleActiveProfileState(json)
             "control_surface_state" -> handleControlSurfaceState(json)
             "control_invoke_result" -> handleControlInvokeResult(json)
+            "trigger_state" -> handleTriggerState(json)
+            "trigger_invoke_result" -> handleTriggerInvokeResult(json)
         }
     }
 
@@ -83,6 +99,8 @@ class SpikeMessageDispatcher {
         uiState = ControlSurfaceUiState.NoProjection
         lastRaw = null
         lastInvokeResult = null
+        triggers = emptyList()
+        lastTriggerResult = null
     }
 
     private fun handleControlInvokeResult(json: JSONObject) {
@@ -108,6 +126,23 @@ class SpikeMessageDispatcher {
             executed = if (json.has("executed")) json.getBoolean("executed") else null,
             executionError = if (json.has("execution_error")) json.getString("execution_error") else null,
             steps = steps,
+        )
+    }
+
+    private fun handleTriggerState(json: JSONObject) {
+        val tsm = TriggerStateMessage.fromJson(json) ?: return
+        triggers = tsm.triggers
+    }
+
+    private fun handleTriggerInvokeResult(json: JSONObject) {
+        val triggerId = json.optString("trigger_id", "")
+        if (triggerId.isEmpty()) return
+        lastTriggerResult = TriggerInvokeResult(
+            triggerId = triggerId,
+            accepted = json.optBoolean("accepted", false),
+            reason = if (json.has("reason")) json.getString("reason") else null,
+            executed = if (json.has("executed")) json.getBoolean("executed") else null,
+            executionError = if (json.has("execution_error")) json.getString("execution_error") else null,
         )
     }
 }

@@ -40,10 +40,10 @@ pub fn validate_structural(trigger: &Trigger) -> Result<(), TriggerStructuralErr
             trigger.version.0,
         ));
     }
-    if let crate::model::TriggerType::Time { ref schedule } = trigger.trigger_type {
-        if schedule.is_empty() {
-            return Err(TriggerStructuralError::MissingSchedule);
-        }
+    if let crate::model::TriggerType::Time { ref schedule } = trigger.trigger_type
+        && schedule.is_empty()
+    {
+        return Err(TriggerStructuralError::MissingSchedule);
     }
     Ok(())
 }
