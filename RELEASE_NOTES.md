@@ -302,3 +302,173 @@ Android tests span: ActiveProfileStateMessage, ControlInvokeRequest, ControlSurf
 - Execution history
 - Action queue
 - Analytics
+
+---
+
+## v0.6.0 Release
+
+> **Tag:** `v0.6.0`
+> **Branch:** `v0.6`
+> **Date:** 2026-07-17
+> **Status:** RELEASED — Workflow engine certified, desktop frozen, Android integration complete.
+
+### Objective
+
+Introduce a workflow engine: ordered sequences of actions that execute sequentially on the Desktop, with stop-on-first-failure semantics. Android receives and parses workflow execution results while preserving full backward compatibility with v0.5.
+
+### Architecture
+
+```
+Android
+    │
+    ▼
+WebSocket Transport
+    │
+    ▼
+agent.rs (coordinator only)
+    │
+    ▼
+ExecutionTarget ──── sole dispatch abstraction
+    │
+    ▼
+execute_target() ─── single entry point
+    ├───────────────┐
+    ▼               ▼
+execute_action()  WorkflowRegistry
+                      │
+                      ▼
+               execute_workflow()
+                      │
+                      ▼
+         WorkflowExecutionResult
+                      │
+                      ▼
+        ControlInvokeResultDto (transport DTO)
+                      │
+                      ▼
+             WebSocket → Android
+```
+
+### Sprint Breakdown
+
+| Sprint | Scope | Commits |
+|--------|-------|---------|
+| Sprint 1 | Workflow domain types + structural validation | `6c6936c`, `e30ef23` |
+| Sprint 2A | ExecutionTarget, WorkflowRegistry, result models | `3e698d6` |
+| Sprint 2B | execute_workflow() — sequential executor | `807fc33` |
+| Sprint 2C | execute_target() integration + agent.rs wiring | `7f0581b` |
+| Sprint 3 | Android steps parsing | `c34603f` |
+
+### Desktop Changes
+
+**New types (model.rs):**
+- `WorkflowId`, `ActionId`, `WorkflowVersion` — typed IDs
+- `Workflow`, `WorkflowStep` — persisted domain types
+- `StepResult`, `WorkflowExecutionResult` — runtime-only (no Serialize)
+
+**New module (workflow_validation.rs):**
+- `validate_structural()` — compile-time checks without runtime dependencies
+- `find_duplicate_workflow_ids()` — duplicate detection
+
+**New module (execution.rs):**
+- `ExecutionTarget` — Action | Workflow dispatch enum
+- `WorkflowRegistry` — lookup-only over `&[Workflow]`
+- `execute_action()` — async wrapper (spawn_blocking + timeout + catch_unwind)
+- `execute_workflow()` — sequential step executor, delegates to execute_action()
+- `execute_target()` — unified dispatcher (registry + execution)
+- `ControlInvokeResultDto` — transport DTO decoupled from runtime models
+
+**Document changes (model.rs):**
+- `Document.workflows: Vec<Workflow>` — new field, defaults to `[]`
+
+**agent.rs:**
+- `control_invoke` handler delegates to `execute_target()`
+- Thin coordinator: validate → build target → delegate → serialize DTO
+
+### Android Changes
+
+**SpikeMessageDispatcher.kt:**
+- `StepResult` data class (stepIndex, actionId, executed, error)
+- `ControlInvokeResult.steps: List<StepResult>` — new field
+- `handleControlInvokeResult` parses optional `steps` array
+- v0.5 responses (no steps) → empty list (backward compatible)
+
+### Protocol Additions
+
+| Field | Type | When | Added |
+|-------|------|------|-------|
+| `steps` | array? | workflow result | v0.6 |
+
+**Step object fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `step_index` | int | 0-based position in workflow |
+| `action_id` | string | Action executed at this step |
+| `executed` | bool | Whether this step succeeded |
+| `error` | string? | Error code if step failed |
+
+All existing v0.5 fields unchanged. `schema_version` remains 1.
+
+### ADR Updates
+
+- **ADR-023:** Workflow Engine — execution layering, stop-on-failure, no retries/rollback/parallelism
+- **ADR-022:** Updated with workflow dispatch semantics
+
+### Test Coverage
+
+| Suite | Count | Status |
+|-------|-------|--------|
+| Desktop (Rust) | 274 | ✅ passing |
+| Android (Kotlin) | 108 | ✅ passing |
+
+Desktop tests span: execution (34), workflow_validation (18), agent (16), command, editor, model, observer, pairing, projection, projection_transport, state.
+
+Android tests span: SpikeMessageDispatcher (42), ControlSurfaceStateMessage (28), ActiveProfileStateMessage (18), ControlSurfacePresentationMapper (15), ControlInvokeRequest (5).
+
+### Certification
+
+| Audit | Verdict |
+|-------|---------|
+| Architecture Audit | PASS (6/6) |
+| Test Audit | PASS |
+| Release Audit | PASS |
+| Desktop Execution Layer | FROZEN |
+
+### Files Changed (v0.6)
+
+**Desktop (Rust):**
+- `src/model.rs` — WorkflowId, ActionId, WorkflowVersion, Workflow, WorkflowStep, StepResult, WorkflowExecutionResult, Document.workflows
+- `src/execution.rs` — ExecutionTarget, WorkflowRegistry, execute_action(), execute_workflow(), execute_target(), ControlInvokeResultDto
+- `src/workflow_validation.rs` — validate_structural(), find_duplicate_workflow_ids(), StructuralError
+- `src/agent.rs` — control_invoke handler delegates to execute_target()
+- `src/main.rs` — mod workflow_validation
+
+**Android (Kotlin):**
+- `SpikeMessageDispatcher.kt` — StepResult, ControlInvokeResult.steps, steps parsing
+
+**Documentation:**
+- `docs/adr/ADR-023-workflow-engine.md`
+- `docs/architecture/v0.6-scope.md`
+
+### Known Limitations
+
+- 5s hard timeout on individual action execution (shared with v0.5)
+- No parallel step execution (by design — sequential only)
+- No retry logic (stop-on-first-failure by design)
+- No rollback (OS actions are irreversible)
+- No background/long-running workflow support
+- `Button.action.action_name: String` vs `WorkflowStep.action_id: ActionId` — documented divergence
+- `WorkflowRegistry` uses linear scan (sufficient for expected workflow counts)
+
+### Not in v0.6
+
+- Background workflow execution
+- Progress notifications
+- Cancellation support
+- Conditional execution
+- Retry policies
+- Trigger engine
+- Workflow editor
+- Button → ExecutionTarget migration
+- Multi-device workflow execution
