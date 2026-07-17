@@ -38,6 +38,14 @@ pub struct ActionError {
     pub message: String,
 }
 
+pub enum ExecutionOutcome {
+    Success,
+    Failed(String),
+    ActionNotFound,
+    Timeout,
+    Panicked,
+}
+
 pub trait Action: Send + Sync {
     fn execute(&self, payload: &Value) -> Result<Value, ActionError>;
 }

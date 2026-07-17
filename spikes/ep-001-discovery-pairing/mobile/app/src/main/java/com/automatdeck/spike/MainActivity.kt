@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -40,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var deviceList: RecyclerView
     private lateinit var statusText: TextView
     private lateinit var responseText: TextView
+    private lateinit var cssContainer: LinearLayout
 
     private val scope = CoroutineScope(Dispatchers.Main)
     private val httpClient = OkHttpClient.Builder()
@@ -51,7 +53,7 @@ class MainActivity : AppCompatActivity() {
     private var currentWebSocket: WebSocket? = null
     private var currentDevice: DiscoveredDevice? = null
 
-    private var latestProjection: ActiveProfileStateMessage? = null
+    private val dispatcher = SpikeMessageDispatcher()
 
     private val deviceId: String by lazy {
         val prefs = getSharedPreferences("auto_mat_deck", MODE_PRIVATE)
@@ -75,6 +77,7 @@ class MainActivity : AppCompatActivity() {
         deviceList = findViewById(R.id.deviceList)
         statusText = findViewById(R.id.statusText)
         responseText = findViewById(R.id.responseText)
+        cssContainer = findViewById(R.id.cssContainer)
 
         deviceList.layoutManager = LinearLayoutManager(this)
 
@@ -246,18 +249,26 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
 
-                        "active_profile_state" -> {
-                            val projection = ActiveProfileStateMessage.fromJson(json)
-                            if (projection != null) {
-                                latestProjection = projection
-                                val idDisplay = projection.activeProfileId ?: "<none>"
-                                Log.i(TAG, "Projection accepted: active_profile_id=$idDisplay")
-                                statusText.post {
-                                    responseText.text = "Projection: active=$idDisplay"
+                        "control_invoke_result" -> {
+                            dispatcher.handle(text)
+                            val result = dispatcher.lastInvokeResult
+                            Log.i(TAG, "control_invoke_result: button_id=${result?.buttonId}, accepted=${result?.accepted}, executed=${result?.executed}")
+                            statusText.post {
+                                if (result != null) {
+                                    responseText.text = when {
+                                        !result.accepted -> "Invoke rejected: ${result.buttonId} — ${result.reason ?: "unknown"}"
+                                        result.executed == true -> "Invoke accepted: ${result.buttonId} — executed"
+                                        else -> "Invoke accepted: ${result.buttonId} — ${result.executionError ?: "execution_failed"}"
+                                    }
                                 }
-                            } else {
-                                Log.w(TAG, "Projection rejected: invalid v1 frame from ${device.name}: $text")
                             }
+                        }
+
+                        "active_profile_state",
+                        "control_surface_state" -> {
+                            dispatcher.handle(text)
+                            Log.i(TAG, "Dispatched: type=$msgType, state=${dispatcher.uiState}")
+                            statusText.post { renderUiState() }
                         }
 
                         else -> {
@@ -360,6 +371,17 @@ class MainActivity : AppCompatActivity() {
         webSocket.send(ping.toString())
     }
 
+    private fun sendControlInvoke(buttonId: String) {
+        val ws = currentWebSocket
+        if (ws == null) {
+            Log.w(TAG, "sendControlInvoke: currentWebSocket is null")
+            return
+        }
+        val invoke = ControlInvokeRequest(buttonId).toJson()
+        Log.i(TAG, "Sending control_invoke: button_id=$buttonId")
+        ws.send(invoke.toString())
+    }
+
     private fun saveTrustedDevice(device: DiscoveredDevice) {
         val prefs = getSharedPreferences("auto_mat_deck", MODE_PRIVATE)
         prefs.edit()
@@ -367,6 +389,46 @@ class MainActivity : AppCompatActivity() {
             .putInt("trusted_port", device.port)
             .putString("trusted_name", device.name)
             .apply()
+    }
+
+    private fun renderUiState() {
+        cssContainer.removeAllViews()
+        val items = ControlSurfacePresentationMapper.map(dispatcher.uiState)
+        for (item in items) {
+            when (item) {
+                is ControlSurfacePresentationItem.NoContent -> {
+                    val tv = TextView(this).apply { text = item.label }
+                    cssContainer.addView(tv)
+                }
+                is ControlSurfacePresentationItem.ProfileHeader -> {
+                    val tv = TextView(this).apply {
+                        text = item.profileName
+                        textSize = 16f
+                        setTextColor(0xFFFFA500.toInt())
+                    }
+                    cssContainer.addView(tv)
+                }
+                is ControlSurfacePresentationItem.PageHeader -> {
+                    val tv = TextView(this).apply {
+                        text = item.pageName
+                        textSize = 14f
+                        setTextColor(0xFFAAAAAA.toInt())
+                    }
+                    cssContainer.addView(tv)
+                }
+                is ControlSurfacePresentationItem.ButtonTile -> {
+                    val b = Button(this).apply {
+                        text = item.label
+                        tag = item.buttonId
+                        setOnClickListener {
+                            Log.i(TAG, "Button pressed: ${item.buttonId} (${item.label})")
+                            sendControlInvoke(item.buttonId)
+                        }
+                    }
+                    cssContainer.addView(b)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {

@@ -5,6 +5,7 @@ mod agent;
 mod command;
 mod discovery;
 mod editor;
+mod execution;
 mod gui;
 mod model;
 mod observer;
@@ -14,6 +15,7 @@ mod projection_transport;
 mod repository;
 mod state;
 mod tray;
+mod workflow_validation;
 
 use std::sync::Arc;
 
@@ -61,6 +63,9 @@ fn main() -> eframe::Result<()> {
     let (projection_transport, projection_state_rx) =
         projection_transport::ProjectionTransportPublisher::new();
 
+    let (css_transport, css_state_rx) =
+        projection_transport::ControlSurfaceTransportPublisher::new();
+
     let ps_for_server = pair_state.clone();
     let pm_for_server = pairing_manager.clone();
     let rt_for_server = shared_runtime.clone();
@@ -77,6 +82,7 @@ fn main() -> eframe::Result<()> {
                 rt_for_server,
                 repo_for_server,
                 projection_state_rx,
+                css_state_rx,
             ));
         })
         .expect("Failed to spawn server thread");
@@ -116,14 +122,16 @@ fn main() -> eframe::Result<()> {
         })
         .expect("Failed to spawn observer thread");
 
-    let projection_publisher: Arc<dyn projection::ProjectionPublisher> =
-        Arc::new(projection_transport);
     let cell_for_projection = observation_cell.clone();
     let shutdown_rx_for_projection = shutdown_rx_from_main.clone();
+    let rt_for_projection = shared_runtime.clone();
     let projection_handle = std::thread::Builder::new()
         .name("projection".into())
         .spawn(move || {
-            let mut policy = projection::PublicationPolicy::new();
+            let mut aps_policy = projection::PublicationPolicy::new();
+            let mut css_policy = projection::ControlSurfacePublicationPolicy::new();
+            let aps_publisher: Arc<dyn projection::ProjectionPublisher> =
+                Arc::new(projection_transport);
             loop {
                 let shutdown = match shutdown_rx_for_projection.has_changed() {
                     Ok(true) => *shutdown_rx_for_projection.borrow(),
@@ -137,9 +145,30 @@ fn main() -> eframe::Result<()> {
                 let transition = cell_for_projection
                     .wait_and_take_timeout(std::time::Duration::from_millis(200));
                 if let Some(transition) = transition {
-                    let proj = projection::project(&transition);
-                    if policy.should_publish(&proj) {
-                        projection_publisher.publish(&proj);
+                    // APS derivation
+                    let aps_proj = projection::project(&transition);
+                    if aps_policy.should_publish(&aps_proj) {
+                        aps_publisher.publish(&aps_proj);
+                    }
+
+                    // CSS derivation — lock only to read active_profile_id & profiles
+                    let css = {
+                        let runtime = rt_for_projection.lock().unwrap();
+                        projection::derive_control_surface(
+                            runtime.runtime.active_profile_id.as_ref(),
+                            &runtime.app.document.profiles,
+                        )
+                    };
+
+                    match &css {
+                        projection::DerivationResult::Failed => {
+                            log::warn!("Control surface derivation failed for active profile");
+                        }
+                        projection::DerivationResult::Published(_) => {
+                            if css_policy.should_publish(&css) {
+                                css_transport.publish_derivation(&css);
+                            }
+                        }
                     }
                 }
             }

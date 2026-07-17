@@ -26,6 +26,12 @@ pub struct DeviceId(String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContextRuleId(String);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct WorkflowId(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ActionId(String);
+
 macro_rules! impl_id {
     ($name:ident) => {
         impl $name {
@@ -52,6 +58,8 @@ impl_id!(PageId);
 impl_id!(ButtonId);
 impl_id!(DeviceId);
 impl_id!(ContextRuleId);
+impl_id!(WorkflowId);
+impl_id!(ActionId);
 
 // ── Domain types ─────────────────────────────────────────────
 
@@ -65,6 +73,8 @@ pub struct Document {
     pub profiles: Vec<Profile>,
     #[serde(default)]
     pub context_rules: Vec<ContextRule>,
+    #[serde(default)]
+    pub workflows: Vec<Workflow>,
 }
 
 impl Document {
@@ -76,6 +86,7 @@ impl Document {
             devices: Vec::new(),
             profiles: vec![Profile::default()],
             context_rules: Vec::new(),
+            workflows: Vec::new(),
         }
     }
 }
@@ -139,6 +150,54 @@ pub struct ActionReference {
     pub action_name: String,
     #[serde(default)]
     pub payload: serde_json::Value,
+}
+
+// ── Workflow domain types ───────────────────────────────────
+
+/// Workflow schema version. Currently always 1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowVersion(pub u16);
+
+impl WorkflowVersion {
+    pub const V1: WorkflowVersion = WorkflowVersion(1);
+}
+
+/// A single step in a workflow — references an action by immutable identifier.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowStep {
+    pub action_id: ActionId,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+}
+
+/// An ordered sequence of actions, persisted in Document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Workflow {
+    pub id: WorkflowId,
+    pub name: String,
+    pub version: WorkflowVersion,
+    pub steps: Vec<WorkflowStep>,
+    pub enabled: bool,
+}
+
+/// Result of executing a single workflow step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepResult {
+    pub step_index: usize,
+    pub action_id: ActionId,
+    pub executed: bool,
+    pub error: Option<String>,
+}
+
+/// Result of executing an entire workflow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowExecutionResult {
+    pub workflow_id: WorkflowId,
+    pub accepted: bool,
+    pub reason: Option<String>,
+    pub executed: bool,
+    pub steps: Vec<StepResult>,
+    pub execution_error: Option<String>,
 }
 
 // ── Context domain types ─────────────────────────────────────

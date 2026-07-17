@@ -1,6 +1,6 @@
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Condvar, Mutex};
 
-use crate::model::RuntimeTransition;
+use crate::model::{Button, Profile, ProfileId, RuntimeTransition};
 
 /// Latest-value synchronization cell.
 /// Bounded O(1) storage for at most one RuntimeTransition.
@@ -76,6 +76,81 @@ pub struct RuntimeProjection {
     pub active_profile_id: Option<String>,
 }
 
+/// Projection of the active Profile's control surface.
+/// Preserves the certified Profile → Pages → Buttons hierarchy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlSurfaceState {
+    pub profile_id: Option<String>,
+    pub profile_name: Option<String>,
+    pub pages: Option<Vec<PageProjection>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageProjection {
+    pub page_id: String,
+    pub name: String,
+    pub buttons: Vec<ButtonProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ButtonProjection {
+    pub button_id: String,
+    pub label: String,
+}
+
+/// Outcome of attempting to derive a ControlSurfaceState.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivationResult {
+    /// Valid projection state to publish.
+    Published(ControlSurfaceState),
+    /// Derivation failed (e.g. active Profile ID not found in Document).
+    /// No fabricated projection; caller must retain current channel state.
+    Failed,
+}
+
+/// Pure function: derive ControlSurfaceState from active Profile identity
+/// and the authoritative Profile list. No I/O, no side effects.
+pub fn derive_control_surface(
+    active_profile_id: Option<&ProfileId>,
+    profiles: &[Profile],
+) -> DerivationResult {
+    let Some(pid) = active_profile_id else {
+        return DerivationResult::Published(ControlSurfaceState {
+            profile_id: None,
+            profile_name: None,
+            pages: None,
+        });
+    };
+
+    let profile = match profiles.iter().find(|p| p.id == *pid) {
+        Some(p) => p,
+        None => return DerivationResult::Failed,
+    };
+
+    let pages: Vec<PageProjection> = profile
+        .pages
+        .iter()
+        .map(|page| PageProjection {
+            page_id: page.id.as_str().to_string(),
+            name: page.name.clone(),
+            buttons: page
+                .buttons
+                .iter()
+                .map(|btn| ButtonProjection {
+                    button_id: btn.id.as_str().to_string(),
+                    label: btn.label.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+
+    DerivationResult::Published(ControlSurfaceState {
+        profile_id: Some(profile.id.as_str().to_string()),
+        profile_name: Some(profile.name.clone()),
+        pages: Some(pages),
+    })
+}
+
 /// Pure function: RuntimeTransition → RuntimeProjection.
 /// No I/O, no side effects, no state.
 pub fn project(transition: &RuntimeTransition) -> RuntimeProjection {
@@ -128,26 +203,84 @@ pub trait ProjectionPublisher: Send + Sync {
     fn publish(&self, projection: &RuntimeProjection);
 }
 
-/// Temporary publisher that logs every received projection.
-/// Used as a bootstrap implementation until transport publishers exist.
-pub(crate) struct LoggingPublisher;
+/// Decides whether a ControlSurfaceState projection should be published.
+/// Same suppression logic as PublicationPolicy but for ControlSurfaceState.
+pub struct ControlSurfacePublicationPolicy {
+    last_emitted: Option<ControlSurfaceState>,
+}
 
-impl ProjectionPublisher for LoggingPublisher {
-    fn publish(&self, projection: &RuntimeProjection) {
-        log::info!(
-            "Projection: ctx={} profile_changed={} prev={:?} active={:?}",
-            projection.context_changed,
-            projection.active_profile_changed,
-            projection.previous_profile_id,
-            projection.active_profile_id,
-        );
+impl ControlSurfacePublicationPolicy {
+    pub fn new() -> Self {
+        Self { last_emitted: None }
+    }
+
+    /// Returns true if the projection should be published.
+    /// First projection always publishes; subsequent projections
+    /// publish only when they differ from the last emitted.
+    /// DerivationFailure always suppresses (channel unchanged).
+    pub fn should_publish(&mut self, result: &DerivationResult) -> bool {
+        match result {
+            DerivationResult::Failed => false,
+            DerivationResult::Published(state) => match &self.last_emitted {
+                None => {
+                    self.last_emitted = Some(state.clone());
+                    true
+                }
+                Some(last) if last == state => false,
+                Some(_) => {
+                    self.last_emitted = Some(state.clone());
+                    true
+                }
+            },
+        }
+    }
+}
+
+/// Outcome of button_id validation against the current active profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionReason {
+    NoActiveProfile,
+    UnknownButton,
+    AmbiguousButton,
+}
+
+/// Pure function: validate a button_id against the current active profile.
+/// Returns Ok(&Button) if exactly one match is found.
+/// No I/O, no transport, no logging, no side effects.
+pub fn validate_button<'a>(
+    active_profile_id: Option<&ProfileId>,
+    profiles: &'a [Profile],
+    button_id: &str,
+) -> Result<&'a Button, RejectionReason> {
+    let pid = match active_profile_id {
+        Some(id) => id,
+        None => return Err(RejectionReason::NoActiveProfile),
+    };
+
+    let profile = match profiles.iter().find(|p| p.id == *pid) {
+        Some(p) => p,
+        None => return Err(RejectionReason::NoActiveProfile),
+    };
+
+    let matches: Vec<&Button> = profile
+        .pages
+        .iter()
+        .flat_map(|page| page.buttons.iter())
+        .filter(|btn| btn.id.as_str() == button_id)
+        .collect();
+
+    match matches.len() {
+        0 => Err(RejectionReason::UnknownButton),
+        1 => Ok(matches[0]),
+        _ => Err(RejectionReason::AmbiguousButton),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ProfileId;
+    use crate::model::{ButtonId, PageId, ProfileId};
+    use std::sync::Arc;
 
     fn t(context_changed: bool, prev: Option<&str>, active: Option<&str>) -> RuntimeTransition {
         RuntimeTransition {
@@ -376,5 +509,479 @@ mod tests {
         let mut policy = PublicationPolicy::new();
         // Policy receives &RuntimeProjection — cannot mutate
         let _ = policy.should_publish(&p);
+    }
+
+    // ── Control Surface Derivation ──
+
+    fn profile(name: &str, pages: Vec<PageProjection>) -> Profile {
+        Profile {
+            id: ProfileId::from_string(name),
+            name: name.to_string(),
+            pages: pages
+                .into_iter()
+                .map(|pp| crate::model::Page {
+                    id: PageId::from_string(&pp.page_id),
+                    name: pp.name,
+                    buttons: pp
+                        .buttons
+                        .into_iter()
+                        .map(|bp| crate::model::Button {
+                            id: ButtonId::from_string(&bp.button_id),
+                            label: bp.label,
+                            action: crate::model::ActionReference {
+                                action_name: String::new(),
+                                payload: serde_json::Value::Null,
+                            },
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn derive_no_active_profile_returns_null_triple() {
+        let profiles = vec![profile("p1", vec![])];
+        let result = derive_control_surface(None, &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                assert_eq!(state.profile_id, None);
+                assert_eq!(state.profile_name, None);
+                assert_eq!(state.pages, None);
+            }
+            DerivationResult::Failed => panic!("expected Published(null triple)"),
+        }
+    }
+
+    #[test]
+    fn derive_active_profile_preserves_association() {
+        let profiles = vec![profile(
+            "coding",
+            vec![PageProjection {
+                page_id: "pg1".into(),
+                name: "Main".into(),
+                buttons: vec![],
+            }],
+        )];
+        let pid = ProfileId::from_string("coding");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                assert_eq!(state.profile_id, Some("coding".into()));
+                assert_eq!(state.profile_name, Some("coding".into()));
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_active_profile_name_preserved() {
+        let mut p = profile("p1", vec![]);
+        p.name = "Coding".into();
+        let profiles = vec![p];
+        let pid = ProfileId::from_string("p1");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                assert_eq!(state.profile_name, Some("Coding".into()));
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_page_order_preserved() {
+        let profiles = vec![profile(
+            "p1",
+            vec![
+                PageProjection {
+                    page_id: "a".into(),
+                    name: "A".into(),
+                    buttons: vec![],
+                },
+                PageProjection {
+                    page_id: "b".into(),
+                    name: "B".into(),
+                    buttons: vec![],
+                },
+                PageProjection {
+                    page_id: "c".into(),
+                    name: "C".into(),
+                    buttons: vec![],
+                },
+            ],
+        )];
+        let pid = ProfileId::from_string("p1");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                let pages = state.pages.unwrap();
+                assert_eq!(pages.len(), 3);
+                assert_eq!(pages[0].page_id, "a");
+                assert_eq!(pages[1].page_id, "b");
+                assert_eq!(pages[2].page_id, "c");
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_page_ids_preserved() {
+        let profiles = vec![profile(
+            "p1",
+            vec![PageProjection {
+                page_id: "my-page-id".into(),
+                name: "Main".into(),
+                buttons: vec![],
+            }],
+        )];
+        let pid = ProfileId::from_string("p1");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                assert_eq!(state.pages.unwrap()[0].page_id, "my-page-id");
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_page_names_preserved() {
+        let profiles = vec![profile(
+            "p1",
+            vec![PageProjection {
+                page_id: "pg1".into(),
+                name: "My Page".into(),
+                buttons: vec![],
+            }],
+        )];
+        let pid = ProfileId::from_string("p1");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                assert_eq!(state.pages.unwrap()[0].name, "My Page");
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_button_order_preserved_per_page() {
+        let profiles = vec![profile(
+            "p1",
+            vec![PageProjection {
+                page_id: "pg1".into(),
+                name: "Main".into(),
+                buttons: vec![
+                    ButtonProjection {
+                        button_id: "btn1".into(),
+                        label: "First".into(),
+                    },
+                    ButtonProjection {
+                        button_id: "btn2".into(),
+                        label: "Second".into(),
+                    },
+                ],
+            }],
+        )];
+        let pid = ProfileId::from_string("p1");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                let buttons = &state.pages.unwrap()[0].buttons;
+                assert_eq!(buttons.len(), 2);
+                assert_eq!(buttons[0].button_id, "btn1");
+                assert_eq!(buttons[1].button_id, "btn2");
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_button_ids_preserved() {
+        let profiles = vec![profile(
+            "p1",
+            vec![PageProjection {
+                page_id: "pg1".into(),
+                name: "Main".into(),
+                buttons: vec![ButtonProjection {
+                    button_id: "my-btn-id".into(),
+                    label: "Test".into(),
+                }],
+            }],
+        )];
+        let pid = ProfileId::from_string("p1");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                assert_eq!(state.pages.unwrap()[0].buttons[0].button_id, "my-btn-id");
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_button_labels_preserved() {
+        let profiles = vec![profile(
+            "p1",
+            vec![PageProjection {
+                page_id: "pg1".into(),
+                name: "Main".into(),
+                buttons: vec![ButtonProjection {
+                    button_id: "b1".into(),
+                    label: "Compile".into(),
+                }],
+            }],
+        )];
+        let pid = ProfileId::from_string("p1");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                assert_eq!(state.pages.unwrap()[0].buttons[0].label, "Compile");
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_active_profile_zero_pages_returns_empty_array() {
+        let profiles = vec![profile("empty", vec![])];
+        let pid = ProfileId::from_string("empty");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                assert_eq!(state.pages, Some(vec![]));
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    #[test]
+    fn derive_unresolved_profile_returns_failed() {
+        let profiles = vec![profile("p1", vec![])];
+        let pid = ProfileId::from_string("nonexistent");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        assert_eq!(result, DerivationResult::Failed);
+    }
+
+    #[test]
+    fn derive_action_reference_excluded() {
+        let mut p = profile(
+            "p1",
+            vec![PageProjection {
+                page_id: "pg1".into(),
+                name: "Main".into(),
+                buttons: vec![ButtonProjection {
+                    button_id: "b1".into(),
+                    label: "Test".into(),
+                }],
+            }],
+        );
+        // Set an action on the button
+        p.pages[0].buttons[0].action = crate::model::ActionReference {
+            action_name: "launch".into(),
+            payload: serde_json::Value::String("notepad.exe".into()),
+        };
+        let profiles = vec![p];
+        let pid = ProfileId::from_string("p1");
+        let result = derive_control_surface(Some(&pid), &profiles);
+        match result {
+            DerivationResult::Published(state) => {
+                let btn = &state.pages.unwrap()[0].buttons[0];
+                assert_eq!(btn.button_id, "b1");
+                assert_eq!(btn.label, "Test");
+                // Only button_id and label exist — no action fields
+            }
+            DerivationResult::Failed => panic!("expected Published"),
+        }
+    }
+
+    // ── ControlSurfacePublicationPolicy ──
+
+    #[test]
+    fn css_policy_first_always_publishes() {
+        let mut policy = ControlSurfacePublicationPolicy::new();
+        let result = DerivationResult::Published(ControlSurfaceState {
+            profile_id: None,
+            profile_name: None,
+            pages: None,
+        });
+        assert!(policy.should_publish(&result));
+    }
+
+    #[test]
+    fn css_policy_suppresses_duplicate() {
+        let mut policy = ControlSurfacePublicationPolicy::new();
+        let result = DerivationResult::Published(ControlSurfaceState {
+            profile_id: Some("p1".into()),
+            profile_name: Some("P1".into()),
+            pages: Some(vec![]),
+        });
+        assert!(policy.should_publish(&result));
+        assert!(!policy.should_publish(&result));
+    }
+
+    #[test]
+    fn css_policy_allows_change_after_duplicate() {
+        let mut policy = ControlSurfacePublicationPolicy::new();
+        let r1 = DerivationResult::Published(ControlSurfaceState {
+            profile_id: Some("p1".into()),
+            profile_name: Some("P1".into()),
+            pages: Some(vec![]),
+        });
+        let r2 = DerivationResult::Published(ControlSurfaceState {
+            profile_id: Some("p2".into()),
+            profile_name: Some("P2".into()),
+            pages: Some(vec![]),
+        });
+        assert!(policy.should_publish(&r1));
+        assert!(policy.should_publish(&r2));
+    }
+
+    #[test]
+    fn css_policy_failure_suppresses() {
+        let mut policy = ControlSurfacePublicationPolicy::new();
+        assert!(!policy.should_publish(&DerivationResult::Failed));
+    }
+
+    #[test]
+    fn css_policy_reset_allows_duplicate() {
+        let result = DerivationResult::Published(ControlSurfaceState {
+            profile_id: Some("p1".into()),
+            profile_name: Some("P1".into()),
+            pages: Some(vec![]),
+        });
+        let mut policy = ControlSurfacePublicationPolicy::new();
+        assert!(policy.should_publish(&result));
+        let mut policy2 = ControlSurfacePublicationPolicy::new();
+        assert!(policy2.should_publish(&result));
+    }
+    // ── validate_button: Path E (ADR-022) ──────────────────────
+
+    fn make_button(button_id: &str) -> crate::model::Button {
+        crate::model::Button {
+            id: ButtonId::from_string(button_id),
+            label: String::new(),
+            action: crate::model::ActionReference {
+                action_name: String::new(),
+                payload: serde_json::Value::Null,
+            },
+        }
+    }
+
+    fn make_page(page_id: &str, buttons: Vec<&str>) -> crate::model::Page {
+        crate::model::Page {
+            id: PageId::from_string(page_id),
+            name: page_id.to_string(),
+            buttons: buttons.into_iter().map(make_button).collect(),
+        }
+    }
+
+    fn make_profile(profile_id: &str, pages: Vec<crate::model::Page>) -> crate::model::Profile {
+        crate::model::Profile {
+            id: ProfileId::from_string(profile_id),
+            name: profile_id.to_string(),
+            pages,
+        }
+    }
+
+    // E1: known button_id -> Ok(Button)
+    #[test]
+    fn v_button_found() {
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        let binding = [p];
+        let r = validate_button(Some(&pid), &binding, "a");
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap().id.as_str(), "a");
+    }
+
+    // E2: unknown button_id -> Err(UnknownButton)
+    #[test]
+    fn v_button_unknown() {
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        let binding = [p];
+        assert_eq!(
+            validate_button(Some(&pid), &binding, "nope"),
+            Err(RejectionReason::UnknownButton)
+        );
+    }
+
+    // E3: no active profile -> Err(NoActiveProfile)
+    #[test]
+    fn v_button_no_active_profile() {
+        assert_eq!(
+            validate_button(None::<&ProfileId>, &[] as &[Profile], "b1"),
+            Err(RejectionReason::NoActiveProfile)
+        );
+    }
+
+    // E4: active_profile_id points to unknown profile -> Err(NoActiveProfile)
+    #[test]
+    fn v_button_absent_profile() {
+        let p = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        assert_eq!(
+            validate_button(Some(&ProfileId::from_string("nope")), &[p], "a"),
+            Err(RejectionReason::NoActiveProfile)
+        );
+    }
+
+    // E5: button_id matches >1 across pages -> Err(AmbiguousButton)
+    #[test]
+    fn v_button_ambiguous() {
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile(
+            "p1",
+            vec![make_page("g1", vec!["dup"]), make_page("g2", vec!["dup"])],
+        );
+        let binding = [p];
+        assert_eq!(
+            validate_button(Some(&pid), &binding, "dup"),
+            Err(RejectionReason::AmbiguousButton)
+        );
+    }
+
+    // E6: same button_id on a different profile -> OK
+    #[test]
+    fn v_button_different_profile_not_ambiguous() {
+        let pid1 = ProfileId::from_string("p1");
+        let p1 = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        let p2 = make_profile("p2", vec![make_page("g1", vec!["a"])]);
+        let binding = [p1, p2];
+        assert!(validate_button(Some(&pid1), &binding, "a").is_ok());
+    }
+
+    // E7: button identity preserved through validate_button
+    #[test]
+    fn v_button_returns_correct_button() {
+        let the_one = make_button("the-one");
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile(
+            "p1",
+            vec![crate::model::Page {
+                id: PageId::from_string("g1"),
+                name: "G1".into(),
+                buttons: vec![the_one, make_button("other")],
+            }],
+        );
+        let binding = [p];
+        let r = validate_button(Some(&pid), &binding, "the-one").unwrap();
+        assert_eq!(r.action.action_name, "");
+    }
+
+    // E8: long-lived borrowed reference
+    #[test]
+    fn v_button_long_lived_ref() {
+        let pid = ProfileId::from_string("p1");
+        let p = make_profile("p1", vec![make_page("g1", vec!["a"])]);
+        let binding = [p];
+        let entry = validate_button(Some(&pid), &binding, "a").unwrap();
+        assert_eq!(entry.id.as_str(), "a");
+        let pid2 = ProfileId::from_string("p2");
+        let p2 = make_profile("p2", vec![make_page("g1", vec!["x"])]);
+        let binding2 = [p2];
+        let _r2 = validate_button(Some(&pid2), &binding2, "ms");
+        assert_eq!(entry.id.as_str(), "a");
     }
 }
