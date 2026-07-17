@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use crate::actions::ActionRegistry;
 use crate::execution;
-use crate::execution::ExecutionTarget;
-use crate::model::ActionId;
+use crate::model::{ActionId, ExecutionTarget};
 use crate::pairing::{SharedPairingManager, ValidationResult, validation_reason_code};
 use crate::projection::{RejectionReason, validate_button};
 use crate::repository::DocumentStore;

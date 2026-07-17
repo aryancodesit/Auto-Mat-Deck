@@ -1,5 +1,5 @@
-use crate::execution::{self, ExecutionTarget};
-use crate::model::Workflow;
+use crate::execution;
+use crate::model::{ExecutionTarget, Workflow};
 use crate::trigger_execution::TriggerEvaluationResult;
 
 /// Bridges sync observer/timer threads to async execute_target() pipeline.

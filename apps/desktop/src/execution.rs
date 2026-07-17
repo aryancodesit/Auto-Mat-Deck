@@ -2,26 +2,11 @@ use std::time::Duration;
 
 use crate::actions::ExecutionOutcome;
 use crate::agent::ACTIONS;
-use crate::model::{ActionId, StepResult, Workflow, WorkflowExecutionResult, WorkflowId};
+use crate::model::{
+    ActionId, ExecutionTarget, StepResult, Workflow, WorkflowExecutionResult, WorkflowId,
+};
 
 const EXECUTION_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// What to execute — either a single action or an entire workflow.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExecutionTarget {
-    Action(ActionId),
-    Workflow(WorkflowId),
-}
-
-impl ExecutionTarget {
-    pub fn action(id: ActionId) -> Self {
-        Self::Action(id)
-    }
-
-    pub fn workflow(id: WorkflowId) -> Self {
-        Self::Workflow(id)
-    }
-}
 
 /// Resolves workflow_id → Workflow reference from a slice.
 /// No registry coupling, no I/O — pure lookup over Document data.

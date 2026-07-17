@@ -209,6 +209,24 @@ pub struct WorkflowExecutionResult {
 
 // ── Trigger domain types ────────────────────────────────────
 
+/// What to execute — either a single action or an entire workflow.
+/// Domain type, not tied to any execution logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionTarget {
+    Action(ActionId),
+    Workflow(WorkflowId),
+}
+
+impl ExecutionTarget {
+    pub fn action(id: ActionId) -> Self {
+        Self::Action(id)
+    }
+
+    pub fn workflow(id: WorkflowId) -> Self {
+        Self::Workflow(id)
+    }
+}
+
 /// Trigger schema version. Currently always 1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriggerVersion(pub u16);

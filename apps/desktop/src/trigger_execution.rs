@@ -82,18 +82,54 @@ pub fn evaluate_manual_triggers(triggers: &[Trigger]) -> Vec<TriggerEvaluationRe
         .collect()
 }
 
-/// Evaluate Time triggers. Returns all enabled Time triggers.
-/// Called periodically by the timer thread.
-pub fn evaluate_time_triggers(triggers: &[Trigger]) -> Vec<TriggerEvaluationResult> {
+/// Evaluate Time triggers. Returns enabled Time triggers whose schedule
+/// matches the current minute. Called periodically by the timer thread.
+///
+/// Schedule format: "minute hour" (two space-separated fields).
+/// - `*` matches any value
+/// - Specific integers match exactly
+///
+/// Examples: `"0 9"` = 09:00, `"*/15 *"` = every 15 minutes, `"30 14"` = 14:30
+pub fn evaluate_time_triggers(
+    triggers: &[Trigger],
+    current_minute: u32,
+    current_hour: u32,
+) -> Vec<TriggerEvaluationResult> {
     triggers
         .iter()
-        .filter(|t| t.enabled && matches!(t.trigger_type, TriggerType::Time { .. }))
+        .filter(|t| {
+            t.enabled
+                && matches!(t.trigger_type, TriggerType::Time { .. })
+                && match &t.trigger_type {
+                    TriggerType::Time { schedule } => {
+                        schedule_matches(current_minute, current_hour, schedule)
+                    }
+                    _ => false,
+                }
+        })
         .map(|t| TriggerEvaluationResult {
             trigger_id: t.id.as_str().to_owned(),
             trigger_type: t.trigger_type.clone(),
             workflow_id: t.workflow_id.clone(),
         })
         .collect()
+}
+
+/// Check if a schedule matches the given minute and hour.
+/// Pure function. Schedule format: "minute hour" with `*` for any value.
+pub fn schedule_matches(minute: u32, hour: u32, schedule: &str) -> bool {
+    let parts: Vec<&str> = schedule.split_whitespace().collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    field_matches(minute, parts[0]) && field_matches(hour, parts[1])
+}
+
+fn field_matches(value: u32, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    pattern.parse::<u32>().map_or(false, |v| v == value)
 }
 
 #[cfg(test)]
@@ -370,18 +406,32 @@ mod tests {
     // ── evaluate_time_triggers ──
 
     #[test]
-    fn time_triggers_returned() {
+    fn time_triggers_returned_when_schedule_matches() {
         let triggers = vec![trigger(
             "t1",
             true,
             TriggerType::Time {
-                schedule: "0 9 * * *".into(),
+                schedule: "30 14".into(),
             },
             "wf-1",
         )];
-        let results = evaluate_time_triggers(&triggers);
+        let results = evaluate_time_triggers(&triggers, 30, 14);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].trigger_id, "t1");
+    }
+
+    #[test]
+    fn time_triggers_not_returned_when_schedule_does_not_match() {
+        let triggers = vec![trigger(
+            "t1",
+            true,
+            TriggerType::Time {
+                schedule: "30 14".into(),
+            },
+            "wf-1",
+        )];
+        let results = evaluate_time_triggers(&triggers, 0, 9);
+        assert!(results.is_empty());
     }
 
     #[test]
@@ -394,33 +444,83 @@ mod tests {
             },
             "wf-1",
         )];
-        let results = evaluate_time_triggers(&triggers);
+        let results = evaluate_time_triggers(&triggers, 0, 9);
         assert!(results.is_empty());
     }
 
     #[test]
     fn non_time_triggers_not_returned() {
         let triggers = vec![trigger("t1", true, TriggerType::Manual, "wf-1")];
-        let results = evaluate_time_triggers(&triggers);
+        let results = evaluate_time_triggers(&triggers, 0, 9);
         assert!(results.is_empty());
     }
 
     #[test]
-    fn mixed_triggers_only_time_returned() {
-        let triggers = vec![
-            trigger("t1", true, TriggerType::Manual, "wf-1"),
-            trigger(
-                "t2",
-                true,
-                TriggerType::Time {
-                    schedule: "0 9 * * *".into(),
-                },
-                "wf-2",
-            ),
-            trigger("t3", true, TriggerType::DesktopStartup, "wf-3"),
-        ];
-        let results = evaluate_time_triggers(&triggers);
+    fn wildcard_schedule_matches_any_time() {
+        let triggers = vec![trigger(
+            "t1",
+            true,
+            TriggerType::Time {
+                schedule: "* *".into(),
+            },
+            "wf-1",
+        )];
+        let results = evaluate_time_triggers(&triggers, 42, 7);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].trigger_id, "t2");
+    }
+
+    // ── schedule_matches ──
+
+    #[test]
+    fn schedule_exact_match() {
+        assert!(schedule_matches(0, 9, "0 9"));
+        assert!(schedule_matches(30, 14, "30 14"));
+        assert!(schedule_matches(59, 23, "59 23"));
+    }
+
+    #[test]
+    fn schedule_minute_mismatch() {
+        assert!(!schedule_matches(1, 9, "0 9"));
+        assert!(!schedule_matches(31, 14, "30 14"));
+    }
+
+    #[test]
+    fn schedule_hour_mismatch() {
+        assert!(!schedule_matches(0, 10, "0 9"));
+        assert!(!schedule_matches(30, 15, "30 14"));
+    }
+
+    #[test]
+    fn schedule_wildcard_minute() {
+        assert!(schedule_matches(0, 9, "* 9"));
+        assert!(schedule_matches(42, 9, "* 9"));
+        assert!(schedule_matches(59, 9, "* 9"));
+    }
+
+    #[test]
+    fn schedule_wildcard_hour() {
+        assert!(schedule_matches(0, 0, "0 *"));
+        assert!(schedule_matches(0, 12, "0 *"));
+        assert!(schedule_matches(0, 23, "0 *"));
+    }
+
+    #[test]
+    fn schedule_both_wildcards() {
+        assert!(schedule_matches(0, 0, "* *"));
+        assert!(schedule_matches(42, 7, "* *"));
+    }
+
+    #[test]
+    fn schedule_invalid_format() {
+        assert!(!schedule_matches(0, 9, ""));
+        assert!(!schedule_matches(0, 9, "0"));
+        assert!(!schedule_matches(0, 9, "0 9 15"));
+        assert!(!schedule_matches(0, 9, "abc def"));
+    }
+
+    #[test]
+    fn schedule_non_numeric_fields() {
+        assert!(!schedule_matches(0, 9, "abc 9"));
+        assert!(!schedule_matches(0, 9, "0 def"));
     }
 }

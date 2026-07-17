@@ -162,7 +162,13 @@ fn main() -> eframe::Result<()> {
                         guard.app.document.workflows.clone(),
                     )
                 };
-                let results = trigger_execution::evaluate_time_triggers(&triggers);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let minute = ((now / 60) % 60) as u32;
+                let hour = ((now / 3600) % 24) as u32;
+                let results = trigger_execution::evaluate_time_triggers(&triggers, minute, hour);
                 dispatcher.dispatch(&results, &workflows);
                 std::thread::sleep(std::time::Duration::from_secs(60));
             }
