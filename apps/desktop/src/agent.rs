@@ -3,8 +3,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use crate::actions::ActionRegistry;
-use crate::actions::ExecutionOutcome;
 use crate::execution;
+use crate::execution::ExecutionTarget;
+use crate::model::ActionId;
 use crate::pairing::{SharedPairingManager, ValidationResult, validation_reason_code};
 use crate::projection::{RejectionReason, validate_button};
 use crate::repository::DocumentStore;
@@ -544,14 +545,15 @@ async fn handle_connection(
                                 req.get("button_id").and_then(|v| v.as_str()).unwrap_or("");
 
                             // Clone runtime state, release lock immediately
-                            let (active_pid, profiles) = if projection_active {
+                            let (active_pid, profiles, workflows) = if projection_active {
                                 let rt = shared.lock().unwrap();
                                 (
                                     rt.runtime.active_profile_id.clone(),
                                     rt.app.document.profiles.clone(),
+                                    rt.app.document.workflows.clone(),
                                 )
                             } else {
-                                (None, Vec::new())
+                                (None, Vec::new(), Vec::new())
                             };
 
                             // Validate: pure, no lock, no .await
@@ -561,46 +563,41 @@ async fn handle_connection(
                                 Err(RejectionReason::NoActiveProfile)
                             };
 
-                            // Execute: extract owned action data, then async execution
-                            let (accepted, executed, reason, execution_error) = match validation {
+                            // Dispatch + execute in one call
+                            let (accepted, dto) = match validation {
                                 Ok(button) => {
-                                    let action_name = button.action.action_name.clone();
+                                    let target = ExecutionTarget::action(ActionId::from_string(
+                                        &button.action.action_name,
+                                    ));
                                     let payload = button.action.payload.clone();
-                                    // ponytail: profiles no longer needed; borrow consumed by clone
-                                    match execution::execute_action(action_name, payload).await {
-                                        ExecutionOutcome::Success => (true, Some(true), None, None),
-                                        ExecutionOutcome::Failed(msg) => {
-                                            (true, Some(false), None, Some(msg))
-                                        }
-                                        ExecutionOutcome::ActionNotFound => (
-                                            true,
-                                            Some(false),
-                                            None,
-                                            Some("action_not_found".into()),
-                                        ),
-                                        ExecutionOutcome::Timeout => (
-                                            true,
-                                            Some(false),
-                                            None,
-                                            Some("execution_timeout".into()),
-                                        ),
-                                        ExecutionOutcome::Panicked => (
-                                            true,
-                                            Some(false),
-                                            None,
-                                            Some("execution_panicked".into()),
-                                        ),
-                                    }
+                                    let action_name = button.action.action_name.clone();
+                                    let result = execution::execute_target(
+                                        &target,
+                                        &action_name,
+                                        payload,
+                                        &workflows,
+                                    )
+                                    .await;
+                                    (true, Some(result))
                                 }
-                                Err(RejectionReason::NoActiveProfile) => {
-                                    (false, None, Some("no_active_profile"), None)
-                                }
-                                Err(RejectionReason::UnknownButton) => {
-                                    (false, None, Some("unknown_button"), None)
-                                }
-                                Err(RejectionReason::AmbiguousButton) => {
-                                    (false, None, Some("ambiguous_button"), None)
-                                }
+                                Err(RejectionReason::NoActiveProfile) => (
+                                    false,
+                                    Some(execution::ControlInvokeResultDto::not_found(
+                                        "no_active_profile",
+                                    )),
+                                ),
+                                Err(RejectionReason::UnknownButton) => (
+                                    false,
+                                    Some(execution::ControlInvokeResultDto::not_found(
+                                        "unknown_button",
+                                    )),
+                                ),
+                                Err(RejectionReason::AmbiguousButton) => (
+                                    false,
+                                    Some(execution::ControlInvokeResultDto::not_found(
+                                        "ambiguous_button",
+                                    )),
+                                ),
                             };
 
                             let mut resp = json!({
@@ -609,19 +606,39 @@ async fn handle_connection(
                                 "button_id": button_id,
                                 "accepted": accepted,
                             });
-                            if let Some(r) = reason {
-                                resp["reason"] = json!(r);
-                            }
-                            if let Some(e) = executed {
-                                resp["executed"] = json!(e);
-                            }
-                            if let Some(e) = execution_error {
-                                resp["execution_error"] = json!(e);
+                            if let Some(ref dto) = dto {
+                                if let Some(ref r) = dto.reason {
+                                    resp["reason"] = json!(r);
+                                }
+                                if let Some(e) = dto.executed {
+                                    resp["executed"] = json!(e);
+                                }
+                                if let Some(ref e) = dto.execution_error {
+                                    resp["execution_error"] = json!(e);
+                                }
+                                if !dto.steps.is_empty() {
+                                    let steps: Vec<Value> = dto
+                                        .steps
+                                        .iter()
+                                        .map(|s| {
+                                            let mut step = json!({
+                                                "step_index": s.step_index,
+                                                "action_id": s.action_id,
+                                                "executed": s.executed,
+                                            });
+                                            if let Some(ref e) = s.error {
+                                                step["error"] = json!(e);
+                                            }
+                                            step
+                                        })
+                                        .collect();
+                                    resp["steps"] = json!(steps);
+                                }
                             }
 
                             info!(
-                                "control_invoke from {}: button_id={}, accepted={}, executed={:?}",
-                                peer, button_id, accepted, executed
+                                "control_invoke from {}: button_id={}, accepted={}",
+                                peer, button_id, accepted
                             );
 
                             if let Err(e) = write.send(Message::Text(resp.to_string().into())).await
