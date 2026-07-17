@@ -15,6 +15,7 @@ mod projection_transport;
 mod repository;
 mod state;
 mod tray;
+mod trigger_execution;
 mod trigger_validation;
 mod workflow_validation;
 
