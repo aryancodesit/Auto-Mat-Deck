@@ -74,7 +74,7 @@ impl AppState {
             .retain(|d| d.device_id.as_str() != device_id);
     }
 
-    pub fn rename_device(&mut self, device_id: &str, new_name: &str) {
+    pub fn _rename_device(&mut self, device_id: &str, new_name: &str) {
         if let Some(d) = self
             .document
             .devices
@@ -118,11 +118,11 @@ impl AppState {
 
     // ── profile / page / button queries ──
 
-    pub fn profiles(&self) -> &[Profile] {
+    pub fn _profiles(&self) -> &[Profile] {
         &self.document.profiles
     }
 
-    pub fn profile_count(&self) -> usize {
+    pub fn _profile_count(&self) -> usize {
         self.document.profiles.len()
     }
 

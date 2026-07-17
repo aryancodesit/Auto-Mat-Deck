@@ -271,6 +271,33 @@ class MainActivity : AppCompatActivity() {
                             statusText.post { renderUiState() }
                         }
 
+                        "trigger_state" -> {
+                            dispatcher.handle(text)
+                            Log.i(TAG, "Trigger state updated: ${dispatcher.triggers.size} triggers")
+                            statusText.post { renderUiState() }
+                        }
+
+                        "trigger_invoke_result" -> {
+                            dispatcher.handle(text)
+                            val result = dispatcher.lastTriggerResult
+                            Log.i(TAG, "trigger_invoke_result: trigger_id=${result?.triggerId}, accepted=${result?.accepted}")
+                            statusText.post {
+                                if (result != null) {
+                                    responseText.text = when {
+                                        !result.accepted -> "Trigger rejected: ${result.triggerId} — ${result.reason ?: "unknown"}"
+                                        result.executed == true -> "Trigger executed: ${result.triggerId}"
+                                        else -> "Trigger accepted: ${result.triggerId} — ${result.executionError ?: "unknown"}"
+                                    }
+                                }
+                            }
+                        }
+
+                        "trigger_history" -> {
+                            dispatcher.handle(text)
+                            Log.i(TAG, "Trigger history updated: ${dispatcher.triggerHistory.size} records")
+                            statusText.post { renderUiState() }
+                        }
+
                         else -> {
                             Log.w(TAG, "Unknown message type=$msgType from ${device.name}: $text")
                             statusText.post { responseText.text = text }
@@ -429,6 +456,89 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        renderTriggerList()
+        renderTriggerHistory()
+    }
+
+    private fun renderTriggerList() {
+        val triggers = dispatcher.triggers
+        if (triggers.isEmpty()) return
+
+        val header = TextView(this).apply {
+            text = "TRIGGERS"
+            textSize = 14f
+            setTextColor(0xFF00FF00.toInt())
+            setPadding(0, 16, 0, 8)
+        }
+        cssContainer.addView(header)
+
+        for (trigger in triggers) {
+            val status = if (trigger.enabled) "[ON]" else "[OFF]"
+            val label = "$status ${trigger.name} (${trigger.type})"
+            val tv = TextView(this).apply {
+                text = label
+                textSize = 12f
+                setTextColor(0xFFCCCCCC.toInt())
+            }
+            cssContainer.addView(tv)
+
+            if (trigger.type == "manual" && trigger.enabled) {
+                val b = Button(this).apply {
+                    text = "Fire: ${trigger.name}"
+                    tag = trigger.triggerId
+                    setOnClickListener {
+                        Log.i(TAG, "Trigger fired: ${trigger.triggerId} (${trigger.name})")
+                        sendTriggerInvoke(trigger.triggerId, trigger.workflowId)
+                    }
+                }
+                cssContainer.addView(b)
+            }
+        }
+    }
+
+    private fun renderTriggerHistory() {
+        val records = dispatcher.triggerHistory
+        if (records.isEmpty()) return
+
+        val header = TextView(this).apply {
+            text = "EXECUTION LOG"
+            textSize = 14f
+            setTextColor(0xFF00BFFF.toInt())
+            setPadding(0, 16, 0, 8)
+        }
+        cssContainer.addView(header)
+
+        for (record in records.take(10)) {
+            val statusIcon = when (record.status) {
+                TriggerHistoryStatus.Success -> "\u2713"
+                TriggerHistoryStatus.Failed -> "\u2717"
+                TriggerHistoryStatus.Rejected -> "\u203B"
+            }
+            val statusColor = when (record.status) {
+                TriggerHistoryStatus.Success -> 0xFF00FF00.toInt()
+                TriggerHistoryStatus.Failed -> 0xFFFF4444.toInt()
+                TriggerHistoryStatus.Rejected -> 0xFFFFAA00.toInt()
+            }
+            val duration = if (record.durationMs > 0) " ${record.durationMs}ms" else ""
+            val label = "$statusIcon ${record.triggerId} ($duration)"
+            val tv = TextView(this).apply {
+                text = label
+                textSize = 11f
+                setTextColor(statusColor)
+            }
+            cssContainer.addView(tv)
+        }
+    }
+
+    private fun sendTriggerInvoke(triggerId: String, workflowId: String) {
+        val ws = currentWebSocket
+        if (ws == null) {
+            Log.w(TAG, "sendTriggerInvoke: currentWebSocket is null")
+            return
+        }
+        val invoke = TriggerInvokeRequest(triggerId, workflowId).toJson()
+        Log.i(TAG, "Sending trigger_invoke: trigger_id=$triggerId, workflow_id=$workflowId")
+        ws.send(invoke.toString())
     }
 
     override fun onDestroy() {

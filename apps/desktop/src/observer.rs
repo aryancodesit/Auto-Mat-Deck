@@ -5,6 +5,7 @@ pub(crate) enum ContextObserverError {
     ProcessOpenFailed,
     ProcessNameQueryFailed,
     InvalidProcessName,
+    #[allow(dead_code)]
     PlatformNotSupported,
 }
 

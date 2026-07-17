@@ -32,6 +32,9 @@ pub struct WorkflowId(String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActionId(String);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TriggerId(String);
+
 macro_rules! impl_id {
     ($name:ident) => {
         impl $name {
@@ -60,6 +63,7 @@ impl_id!(DeviceId);
 impl_id!(ContextRuleId);
 impl_id!(WorkflowId);
 impl_id!(ActionId);
+impl_id!(TriggerId);
 
 // ── Domain types ─────────────────────────────────────────────
 
@@ -75,6 +79,8 @@ pub struct Document {
     pub context_rules: Vec<ContextRule>,
     #[serde(default)]
     pub workflows: Vec<Workflow>,
+    #[serde(default)]
+    pub triggers: Vec<Trigger>,
 }
 
 impl Document {
@@ -87,6 +93,7 @@ impl Document {
             profiles: vec![Profile::default()],
             context_rules: Vec::new(),
             workflows: Vec::new(),
+            triggers: Vec::new(),
         }
     }
 }
@@ -198,6 +205,76 @@ pub struct WorkflowExecutionResult {
     pub executed: bool,
     pub steps: Vec<StepResult>,
     pub execution_error: Option<String>,
+}
+
+// ── Trigger domain types ────────────────────────────────────
+
+/// What to execute — either a single action or an entire workflow.
+/// Domain type, not tied to any execution logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionTarget {
+    Action(ActionId),
+    Workflow(WorkflowId),
+}
+
+impl ExecutionTarget {
+    pub fn action(id: ActionId) -> Self {
+        Self::Action(id)
+    }
+
+    pub fn workflow(id: WorkflowId) -> Self {
+        Self::Workflow(id)
+    }
+}
+
+/// Trigger schema version. Currently always 1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerVersion(pub u16);
+
+impl TriggerVersion {
+    pub const V1: TriggerVersion = TriggerVersion(1);
+}
+
+/// What event fires this trigger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum TriggerType {
+    Manual,
+    Time { schedule: String },
+    DesktopStartup,
+    ProcessLaunch { process_name: String },
+}
+
+/// An event-to-workflow binding, persisted in Document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Trigger {
+    pub id: TriggerId,
+    pub name: String,
+    pub version: TriggerVersion,
+    #[serde(flatten)]
+    pub trigger_type: TriggerType,
+    pub workflow_id: WorkflowId,
+    pub enabled: bool,
+}
+
+// ── Trigger history types ────────────────────────────────────
+
+/// Status of a trigger execution attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TriggerExecutionStatus {
+    Success,
+    Failed { reason: String },
+    Rejected { reason: String },
+}
+
+/// A single trigger execution record, stored in history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerExecutionRecord {
+    pub trigger_id: TriggerId,
+    pub workflow_id: WorkflowId,
+    pub status: TriggerExecutionStatus,
+    pub timestamp: u64,
+    pub duration_ms: u64,
 }
 
 // ── Context domain types ─────────────────────────────────────

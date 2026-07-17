@@ -14,8 +14,8 @@ pub struct DesktopApp {
     pairing_manager: SharedPairingManager,
     store: Arc<dyn DocumentStore>,
     theme: Theme,
-    rename_device_id: String,
-    rename_buffer: String,
+    _rename_device_id: String,
+    _rename_buffer: String,
     pub editor: EditorUi,
 }
 
@@ -42,8 +42,8 @@ impl DesktopApp {
             pairing_manager,
             store,
             theme: Theme::Dark,
-            rename_device_id: String::new(),
-            rename_buffer: String::new(),
+            _rename_device_id: String::new(),
+            _rename_buffer: String::new(),
             editor: EditorUi::new(),
         }
     }
