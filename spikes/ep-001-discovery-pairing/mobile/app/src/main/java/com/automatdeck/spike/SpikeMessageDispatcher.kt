@@ -12,12 +12,20 @@ sealed interface ControlSurfaceUiState {
     ) : ControlSurfaceUiState
 }
 
+data class StepResult(
+    val stepIndex: Int,
+    val actionId: String,
+    val executed: Boolean,
+    val error: String?,
+)
+
 data class ControlInvokeResult(
     val buttonId: String,
     val accepted: Boolean,
     val reason: String?,
     val executed: Boolean?,
     val executionError: String?,
+    val steps: List<StepResult>,
 )
 
 class SpikeMessageDispatcher {
@@ -78,12 +86,28 @@ class SpikeMessageDispatcher {
     }
 
     private fun handleControlInvokeResult(json: JSONObject) {
+        val steps = if (json.has("steps")) {
+            val arr = json.getJSONArray("steps")
+            (0 until arr.length()).map { i ->
+                val s = arr.getJSONObject(i)
+                StepResult(
+                    stepIndex = s.optInt("step_index", i),
+                    actionId = s.optString("action_id", ""),
+                    executed = s.optBoolean("executed", false),
+                    error = if (s.has("error")) s.getString("error") else null,
+                )
+            }
+        } else {
+            emptyList()
+        }
+
         lastInvokeResult = ControlInvokeResult(
             buttonId = json.optString("button_id", ""),
             accepted = json.optBoolean("accepted", false),
             reason = if (json.has("reason")) json.getString("reason") else null,
             executed = if (json.has("executed")) json.getBoolean("executed") else null,
             executionError = if (json.has("execution_error")) json.getString("execution_error") else null,
+            steps = steps,
         )
     }
 }

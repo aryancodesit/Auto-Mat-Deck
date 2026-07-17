@@ -610,4 +610,179 @@ class SpikeMessageDispatcherTest {
         d.reset()
         assertNull(d.lastInvokeResult)
     }
+
+    // ── Path H: Sprint 3 — workflow steps ──
+
+    // H1: v0.5 response (no steps field) → empty steps list
+    @Test
+    fun invoke_result_v05_no_steps_field() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":true,
+            "executed":true
+        }""")
+        val r = d.lastInvokeResult!!
+        assertTrue(r.accepted)
+        assertTrue(r.executed!!)
+        assertTrue(r.steps.isEmpty())
+    }
+
+    // H2: v0.5 rejected response (no steps) → empty steps list
+    @Test
+    fun invoke_result_v05_rejected_no_steps() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":false,
+            "reason":"unknown_button"
+        }""")
+        val r = d.lastInvokeResult!!
+        assertFalse(r.accepted)
+        assertTrue(r.steps.isEmpty())
+    }
+
+    // H3: v0.6 workflow response with steps
+    @Test
+    fun invoke_result_v06_workflow_with_steps() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wf-btn",
+            "accepted":true,
+            "executed":true,
+            "steps":[
+                {"step_index":0,"action_id":"lock","executed":true},
+                {"step_index":1,"action_id":"launch","executed":true}
+            ]
+        }""")
+        val r = d.lastInvokeResult!!
+        assertTrue(r.accepted)
+        assertTrue(r.executed!!)
+        assertEquals(2, r.steps.size)
+        assertEquals(0, r.steps[0].stepIndex)
+        assertEquals("lock", r.steps[0].actionId)
+        assertTrue(r.steps[0].executed)
+        assertNull(r.steps[0].error)
+        assertEquals(1, r.steps[1].stepIndex)
+        assertEquals("launch", r.steps[1].actionId)
+        assertTrue(r.steps[1].executed)
+    }
+
+    // H4: v0.6 workflow with step failure
+    @Test
+    fun invoke_result_v06_workflow_step_failure() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wf-btn",
+            "accepted":true,
+            "executed":false,
+            "execution_error":"action_not_found",
+            "steps":[
+                {"step_index":0,"action_id":"lock","executed":true},
+                {"step_index":1,"action_id":"nonexistent","executed":false,"error":"action_not_found"}
+            ]
+        }""")
+        val r = d.lastInvokeResult!!
+        assertTrue(r.accepted)
+        assertEquals(false, r.executed)
+        assertEquals("action_not_found", r.executionError)
+        assertEquals(2, r.steps.size)
+        assertTrue(r.steps[0].executed)
+        assertNull(r.steps[0].error)
+        assertFalse(r.steps[1].executed)
+        assertEquals("action_not_found", r.steps[1].error)
+    }
+
+    // H5: v0.6 action response with empty steps array
+    @Test
+    fun invoke_result_v06_action_empty_steps() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wifi",
+            "accepted":true,
+            "executed":true,
+            "steps":[]
+        }""")
+        val r = d.lastInvokeResult!!
+        assertTrue(r.accepted)
+        assertTrue(r.executed!!)
+        assertTrue(r.steps.isEmpty())
+    }
+
+    // H6: v0.6 workflow disabled rejection (no steps)
+    @Test
+    fun invoke_result_v06_workflow_disabled_no_steps() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wf-btn",
+            "accepted":false,
+            "reason":"workflow_disabled"
+        }""")
+        val r = d.lastInvokeResult!!
+        assertFalse(r.accepted)
+        assertEquals("workflow_disabled", r.reason)
+        assertTrue(r.steps.isEmpty())
+    }
+
+    // H7: step with error field present
+    @Test
+    fun invoke_result_step_with_error() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wf-btn",
+            "accepted":true,
+            "executed":false,
+            "steps":[{"step_index":0,"action_id":"bad","executed":false,"error":"execution_timeout"}]
+        }""")
+        val r = d.lastInvokeResult!!
+        assertEquals(1, r.steps.size)
+        assertEquals("execution_timeout", r.steps[0].error)
+    }
+
+    // H8: step without error field → null
+    @Test
+    fun invoke_result_step_without_error_is_null() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wf-btn",
+            "accepted":true,
+            "executed":true,
+            "steps":[{"step_index":0,"action_id":"lock","executed":true}]
+        }""")
+        val r = d.lastInvokeResult!!
+        assertNull(r.steps[0].error)
+    }
+
+    // H9: reset clears steps
+    @Test
+    fun reset_clears_steps() {
+        val d = SpikeMessageDispatcher()
+        d.handle("""{
+            "type":"control_invoke_result",
+            "schema_version":1,
+            "button_id":"wf-btn",
+            "accepted":true,
+            "executed":true,
+            "steps":[{"step_index":0,"action_id":"lock","executed":true}]
+        }""")
+        assertEquals(1, d.lastInvokeResult!!.steps.size)
+        d.reset()
+        assertNull(d.lastInvokeResult)
+    }
 }
