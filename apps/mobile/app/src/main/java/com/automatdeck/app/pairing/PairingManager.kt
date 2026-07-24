@@ -3,18 +3,36 @@ package com.automatdeck.app.pairing
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.automatdeck.app.connection.SessionManager
+import com.automatdeck.app.discovery.DiscoveredDevice
+import com.automatdeck.app.identity.DeviceIdentity
 import org.json.JSONObject
 
 class PairingManager(
+    private val identity: DeviceIdentity,
+    private val trustStore: TrustedDeviceStore,
+    private val sessionManager: SessionManager,
     private val onStateChanged: (PairingState) -> Unit,
     private val onMessage: (String) -> Unit
 ) {
     private var currentState = PairingState.Idle
     private val timeoutHandler = Handler(Looper.getMainLooper())
     private var timeoutRunnable: Runnable? = null
+    private var targetDevice: DiscoveredDevice? = null
 
     fun getState(): PairingState = currentState
 
+    fun startPairing(device: DiscoveredDevice) {
+        if (currentState == PairingState.WaitingForApproval) {
+            Log.w(TAG, "Already waiting for approval")
+            return
+        }
+        targetDevice = device
+        updateState(PairingState.WaitingForCode)
+        onMessage("Enter the 6-digit pairing code from Desktop")
+    }
+
+    // Keep compatibility with old signature
     fun startPairing(sendFn: (String) -> Boolean) {
         if (currentState == PairingState.WaitingForApproval) {
             Log.w(TAG, "Already waiting for approval")
@@ -22,6 +40,13 @@ class PairingManager(
         }
         updateState(PairingState.WaitingForCode)
         onMessage("Enter the 6-digit pairing code from Desktop")
+    }
+
+    fun sendPairRequest(
+        code: String,
+        sendFn: (String) -> Boolean
+    ): Boolean {
+        return sendPairRequest(code, identity.deviceId, identity.deviceName, sendFn)
     }
 
     fun sendPairRequest(
@@ -59,7 +84,13 @@ class PairingManager(
 
     fun handlePairAccepted(deviceName: String) {
         cancelTimeout()
-        updateState(Paired)
+        val device = targetDevice
+        if (device != null) {
+            trustStore.save(device)
+            identity.setPaired(true)
+            sessionManager.connect()
+        }
+        updateState(PairingState.Paired)
         onMessage("Paired with $deviceName ✓")
     }
 
@@ -87,6 +118,7 @@ class PairingManager(
 
     fun reset() {
         cancelTimeout()
+        targetDevice = null
         updateState(PairingState.Idle)
     }
 
