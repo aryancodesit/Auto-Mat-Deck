@@ -727,9 +727,9 @@ Android
 
 | Sprint | Scope | Status |
 |--------|-------|--------|
-| Sprint 1A | TrustStore extraction (desktop) | ✅ Complete |
-| Sprint 1B | DiscoveryClient (Android, promoted from spike) | ✅ Complete |
-| Sprint 1C | PairingManager (Android, state machine) | ✅ Complete |
+| Sprint 1A | TrustStore extraction (desktop) | ✅ Frozen |
+| Sprint 1B | DiscoveryClient (Android, promoted from spike) | ✅ Frozen |
+| Sprint 1C | PairingManager (Android, state machine) | ✅ Frozen |
 | Sprint 2 | ConnectionStateMachine + SessionManager | Pending |
 | Sprint 3 | Auto-Reconnect + HeartbeatService | Pending |
 | Sprint 4 | Consumer Polish (Welcome Flow, Diagnostics, Animations) | Pending |
@@ -763,7 +763,7 @@ Android
 
 | Suite | Count | Status |
 |-------|-------|--------|
-| Desktop (Rust) | 365 | ✅ passing |
+| Desktop (Rust) | 366 | ✅ passing |
 | Android (Kotlin, spike) | 167 | ✅ passing |
 | Android (Kotlin, apps/mobile) | New modules, tests pending | — |
 
