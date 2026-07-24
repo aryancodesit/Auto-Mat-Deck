@@ -113,6 +113,8 @@ impl AppState {
             device_name: device_name.to_string(),
             last_seen: now,
             paired_at: now,
+            pairing_method: PairingMethod::default(),
+            protocol_version: 0,
         });
     }
 

@@ -688,159 +688,98 @@ All new v0.7 code satisfies Clippy. Remaining warnings originate from pre-existi
 
 ---
 
-## v0.8.0 Release
+## v0.8.0 Release (In Progress)
 
-> **Tag:** `v0.8.0`
 > **Branch:** `v0.7` (continuation)
 > **Date:** 2026-07-17
-> **Status:** RELEASED — Trigger history and execution log.
+> **Status:** IN PROGRESS — Consumer experience release: zero-configuration connection.
 
 ### Objective
 
-Add trigger history and execution log: bounded ring buffer of trigger execution records, live WebSocket push to connected Android clients, persistence across restarts, and an Android execution log UI. The v0.6 execution layer remains frozen.
+Make Auto-Mat-Deck feel like an application that "just works." The connection layer becomes almost invisible — zero-config discovery, QR-based pairing, auto-reconnect, and friendly device naming. The v0.6/v0.7 execution and trigger engines remain frozen.
 
 ### Architecture
 
 ```
-Trigger Dispatcher
-    │
-    ├── record() → TriggerHistory (Arc<Mutex<>>)
-    │
-    └── publish() → watch::Sender<Option<String>>
-                          │
-                          ▼
-                    agent.rs select! loop
-                          │
-                          ▼
-                    WebSocket → Android
-                          │
-                          ▼
-                    Execution Log UI
+Desktop
+ ├── Discovery Service (mDNS announcer)
+ ├── Pairing Manager (OTP + QR)
+ ├── Trust Store (TrustedDevice with metadata)
+ ├── Session Manager
+ ├── Connection Monitor
+ ├── Existing WebSocket Server
+ └── Existing Workflow/Trigger Engine
 
-Shutdown: save_to_file("trigger_history.json")
-Startup:  load_from_file("trigger_history.json")
+                ▲
+        Zero-config Discovery
+                ▼
+
+Android
+ ├── Discovery Client (mDNS, continuous scan)
+ ├── Pairing Manager (state machine)
+ ├── Trusted Device Store
+ ├── Auto-Reconnect
+ ├── Existing UI
+ └── Existing Action/Trigger Handling
 ```
 
-### Sprint Breakdown
+### Sprint Breakdown (v0.8.0)
 
-| Sprint | Scope |
-|--------|-------|
-| Sprint 1 | TriggerHistory domain type + bounded ring buffer |
-| Sprint 2 | TriggerDispatcher records dispatches with status/timestamp/duration |
-| Sprint 3 | Watch channel push + agent.rs retained snapshot + live updates + Android trigger_history parsing + execution log UI |
-| Sprint 4 | Persistence (save/load to JSON file) |
+| Sprint | Scope | Status |
+|--------|-------|--------|
+| Sprint 1A | TrustStore extraction (desktop) | ✅ Complete |
+| Sprint 1B | DiscoveryClient (Android, promoted from spike) | ✅ Complete |
+| Sprint 1C | PairingManager (Android, state machine) | ✅ Complete |
+| Sprint 2 | ConnectionStateMachine + SessionManager | Pending |
+| Sprint 3 | Auto-Reconnect + HeartbeatService | Pending |
+| Sprint 4 | Consumer Polish (Welcome Flow, Diagnostics, Animations) | Pending |
 
-### Desktop Changes
+### Sprint 1 Deliverables
 
-**New module (trigger_history.rs):**
-- `TriggerHistory` — bounded VecDeque ring buffer (default 100)
-- `record()` — adds entry, evicts oldest at capacity
-- `recent(n)` — newest-first iterator
-- `to_json_recent(n)` — serialized for WebSocket transport
-- `save_to_file()` / `load_from_file()` — JSON persistence
+**Desktop (Rust):**
+- `trust_store.rs` — Standalone TrustStore with clean API
+- `TrustedDevice` enhanced with `pairing_method` and `protocol_version` fields
+- Serde defaults for backward compatibility with existing `trusted_devices.json`
+- 12 new tests
 
-**New types (model.rs):**
-- `TriggerExecutionStatus` — enum: `Success`, `Failed { reason }`, `Rejected { reason }`
-- `TriggerExecutionRecord` — struct: trigger_id, workflow_id, status, timestamp, duration_ms
+**Android (Kotlin) — apps/mobile/discovery/:**
+- `DiscoveryManager.kt` — Orchestrator with continuous scan + caching
+- `DiscoveryProvider.kt` — Interface for discovery backends
+- `MdnsDiscoveryProvider.kt` — mDNS implementation (promoted from spike)
+- `DiscoveredDevice.kt` — Data class with address, name, deviceId
+- `DiscoveryCache.kt` — SharedPreferences-based last-known device cache
 
-**Modified (trigger_dispatch.rs):**
-- `TriggerDispatcher` takes `(Arc<Mutex<TriggerHistory>>, watch::Sender<Option<String>>)`
-- Records each dispatch with status, timestamp, duration
-- Publishes serialized history after recording
+**Android (Kotlin) — apps/mobile/pairing/:**
+- `PairingManager.kt` — State machine for pairing flow
+- `PairingState.kt` — State enum + PairingResult data class
+- `TrustedDeviceStore.kt` — Persistent trust storage (fixes device_id bug)
 
-**Modified (agent.rs):**
-- `handle_connection` takes `trigger_history_rx: watch::Receiver<Option<String>>` (9th param)
-- Sends retained snapshot on trusted connect (all 3 paths)
-- Live updates via select! loop
-
-**Modified (main.rs):**
-- Creates watch channel `(history_tx, history_rx)`
-- Loads history from `trigger_history.json` on startup
-- Saves history on shutdown
-
-### Android Changes
-
-**New files:**
-- `TriggerHistoryMessage.kt` — parses `trigger_history` messages, TriggerHistoryStatus enum, TriggerHistoryRecord data class
-- `TriggerHistoryMessageTest.kt` — 19 tests
-
-**Modified files:**
-- `SpikeMessageDispatcher.kt` — `triggerHistory` property, `handleTriggerHistory()`, reset clears history
-- `MainActivity.kt` — handles `trigger_history` messages, renders execution log section with status icons
-
-### Protocol Additions
-
-| Message | Direction | Purpose |
-|---------|-----------|---------|
-| `trigger_history` | Desktop → Android | Execution log records (retained + live) |
-
-**trigger_history fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `schema_version` | int | Always 1 |
-| `records` | array | Newest-first execution records |
-
-**Record object fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `trigger_id` | string | Which trigger fired |
-| `workflow_id` | string | Which workflow was targeted |
-| `status` | string/object | `"Success"` or `{"Failed":{"reason":"..."}}` or `{"Rejected":{"reason":"..."}}` |
-| `timestamp` | int | Unix timestamp (seconds) |
-| `duration_ms` | int | Execution duration in milliseconds |
-
-All existing v0.7 fields unchanged. `schema_version` remains 1.
-
-### ADR Updates
-
-- **ADR-025:** Trigger History — bounded ring buffer, watch channel protocol, persistence, Android execution log
+**Documentation:**
+- ADR-026: TrustStore architecture
+- ADR-027: Discovery architecture
+- ADR-028: Pairing architecture
 
 ### Test Coverage
 
 | Suite | Count | Status |
 |-------|-------|--------|
-| Desktop (Rust) | 353 | ✅ passing |
-| Android (Kotlin) | 167 | ✅ passing |
+| Desktop (Rust) | 365 | ✅ passing |
+| Android (Kotlin, spike) | 167 | ✅ passing |
+| Android (Kotlin, apps/mobile) | New modules, tests pending | — |
 
-Desktop tests span: trigger_history (14), trigger_dispatch (8), execution, trigger_execution (33), trigger_validation (22), agent, command, editor, model, observer, pairing, projection, projection_transport, state.
+### Known Limitations (Sprint 1)
 
-Android tests span: SpikeMessageDispatcher (76), TriggerHistoryMessage (19), ControlSurfaceStateMessage (28), ActiveProfileStateMessage (18), ControlSurfacePresentationMapper (15), ControlInvokeRequest (5), TriggerStateMessage (19), TriggerInvokeRequest (5).
-
-### Files Changed (v0.8)
-
-**Desktop (Rust):**
-- `src/trigger_history.rs` — TriggerHistory ring buffer with persistence (new)
-- `src/model.rs` — TriggerExecutionStatus, TriggerExecutionRecord
-- `src/trigger_dispatch.rs` — history recording + watch channel publishing
-- `src/agent.rs` — trigger_history_rx in select!, retained snapshot on trusted connect
-- `src/main.rs` — watch channel creation, history load/save
-
-**Android (Kotlin):**
-- `TriggerHistoryMessage.kt` — trigger_history parsing (new)
-- `TriggerHistoryMessageTest.kt` — 19 tests (new)
-- `SpikeMessageDispatcher.kt` — triggerHistory property, handleTriggerHistory()
-- `MainActivity.kt` — execution log rendering
-
-**Documentation:**
-- `docs/adr/ADR-025-trigger-history.md`
-
-### Known Limitations
-
-- History is in-memory + single JSON file (not a database)
-- No history search/filter (linear scan only)
-- No history export or persistence rotation
-- Watch channel sends full history on each update (not incremental)
-- No per-trigger history isolation
-- Persistence only on graceful shutdown (crash loses current session)
+- QR scanning not yet implemented (OTP only)
+- No continuous discovery on Desktop (single-shot mDNS)
+- No SessionManager or ConnectionStateMachine yet
+- No auto-reconnect or heartbeat yet
+- Android apps/mobile has discovery + pairing modules but no full app yet
 
 ### Not in v0.8
 
-- History search and filtering
-- History export (CSV/JSON)
-- Persistence rotation/archival
-- Incremental history updates (delta push)
-- Per-trigger history views
-- History retention policies
-- History analytics/statistics
+- Cloud sync
+- Multi-user support
+- Remote access (LAN only)
+- Plugin system
+- Undo/rollback
+- Analytics

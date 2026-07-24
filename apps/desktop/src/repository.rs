@@ -126,6 +126,39 @@ impl From<LegacyDevice> for TrustedDevice {
             device_name: d.device_name,
             last_seen: d.last_seen,
             paired_at: d.paired_at,
+            pairing_method: PairingMethod::default(),
+            protocol_version: 0,
         }
+    }
+}
+
+// ── In-memory implementation (testing) ────────────────────────
+
+use std::sync::Mutex;
+
+/// In-memory document store for tests. Never touches the filesystem.
+pub struct InMemoryRepository {
+    document: Mutex<Document>,
+}
+
+impl InMemoryRepository {
+    pub fn new() -> Self {
+        Self {
+            document: Mutex::new(Document::empty()),
+        }
+    }
+}
+
+impl DocumentStore for InMemoryRepository {
+    fn load(&self) -> Document {
+        self.document.lock().unwrap().clone()
+    }
+
+    fn save(&self, document: &Document) {
+        *self.document.lock().unwrap() = document.clone();
+    }
+
+    fn data_dir(&self) -> &Path {
+        Path::new(".")
     }
 }

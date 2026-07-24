@@ -105,6 +105,24 @@ pub struct TrustedDevice {
     pub device_name: String,
     pub last_seen: u64,
     pub paired_at: u64,
+    #[serde(default)]
+    pub pairing_method: PairingMethod,
+    #[serde(default)]
+    pub protocol_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairingMethod {
+    QrCode,
+    Otp,
+    Manual,
+}
+
+impl Default for PairingMethod {
+    fn default() -> Self {
+        Self::Otp
+    }
 }
 
 /// A named profile containing pages of buttons.

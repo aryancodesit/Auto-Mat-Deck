@@ -19,6 +19,7 @@ mod trigger_dispatch;
 mod trigger_execution;
 mod trigger_history;
 mod trigger_validation;
+mod trust_store;
 mod workflow_validation;
 
 use std::sync::Arc;

@@ -770,7 +770,7 @@ mod tests {
 
     fn make_runtime() -> SharedRuntime {
         Arc::new(Mutex::new(DesktopRuntime::new(
-            &crate::repository::JsonRepository::new(),
+            &crate::repository::InMemoryRepository::new(),
         )))
     }
 
