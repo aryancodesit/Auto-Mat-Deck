@@ -40,8 +40,14 @@ Application Layer (Sprint 3+)
     Desktop Agent
 ```
 
-SessionManager owns ConnectionStateMachine. The state machine owns the
-TCP socket. No other component touches the socket directly.
+SessionManager owns both the TCP socket and the ConnectionStateMachine.
+The state machine validates transitions and emits events — it owns no I/O.
+
+```
+SessionManager
+    ├── owns Socket (java.net.Socket)
+    └── owns ConnectionStateMachine (pure state)
+```
 
 ## 3. ConnectionStateMachine
 
@@ -190,23 +196,22 @@ After TCP connect, SessionManager sends:
 {
     "type": "identify",
     "device_id": "550e8400-...",
-    "device_name": "Android-Pixel 7",
-    "protocol_version": 1
+    "device_name": "Android-Pixel 7"
 }
 ```
 
-Desktop responds with:
+Desktop responds with either:
 
 ```json
-{
-    "type": "identify_ack",
-    "accepted": true,
-    "device_name": "Desktop-DESKTOP-ABC"
-}
+{"type": "trusted", "device_id": "550e8400-..."}
+```
+or:
+```json
+{"type": "untrusted", "message": "Device not paired."}
 ```
 
-If `accepted == false`, session is rejected and state goes to
-Disconnected. If no response within 5 seconds, timeout -> Disconnected.
+If `untrusted`, session is rejected and state goes to Disconnected.
+If no response within 5 seconds, timeout -> Disconnected.
 
 ### Integration with Sprint 1
 
