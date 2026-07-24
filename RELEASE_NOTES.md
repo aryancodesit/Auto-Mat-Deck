@@ -730,7 +730,7 @@ Android
 | Sprint 1A | TrustStore extraction (desktop) | ✅ Frozen |
 | Sprint 1B | DiscoveryClient (Android, promoted from spike) | ✅ Frozen |
 | Sprint 1C | PairingManager (Android, state machine) | ✅ Frozen |
-| Sprint 2 | ConnectionStateMachine + SessionManager | Pending |
+| Sprint 2 | ConnectionStateMachine + SessionManager | Planning Complete |
 | Sprint 3 | Auto-Reconnect + HeartbeatService | Pending |
 | Sprint 4 | Consumer Polish (Welcome Flow, Diagnostics, Animations) | Pending |
 
